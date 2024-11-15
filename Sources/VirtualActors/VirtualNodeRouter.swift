@@ -10,6 +10,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     case noActorsAvailable
   }
   
+  // FIXME: Should be a HashRing
   private lazy var virtualNodes: Set<VirtualNode> = .init()
   private var listeningTask: Task<Void, Never>?
 
@@ -36,7 +37,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// - Parameters:
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
-  distributed func get<A: VirtualActor>(id: VirtualActorID) async throws -> A {
+  distributed func getActor<A: VirtualActor>(withId id: VirtualActorID) async throws -> A {
     for virtualNode in virtualNodes {
       if let actor: A = try? await virtualNode.find(id: id) {
         return actor
@@ -49,7 +50,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// - Parameters:
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
-  distributed func getNode(for id: VirtualActorID) async throws -> VirtualNode {
+  distributed func getNode(forId id: VirtualActorID) async throws -> VirtualNode {
     guard let node = self.virtualNodes.randomElement() else {
       // There should be always a node (at least local node), if not—something sus
       throw Error.noNodesAvailable

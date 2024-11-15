@@ -25,7 +25,7 @@ public actor ClusterVirtualActorsPlugin {
       /// If there are no actors available—let's try to build it
       case VirtualNodeRouter.Error.noActorsAvailable:
         /// Get appropriate node
-        let node = try await router.getNode(for: id)
+        let node = try await router.getNode(forId: id)
         /// Pass cluster system of this node
         let actor = try await build(node.actorSystem)
         /// Register actor on this node (for future lookups)
@@ -45,7 +45,7 @@ public actor ClusterVirtualActorsPlugin {
     withId id: VirtualActorID
   ) async throws -> A {
     guard let router else { throw Error.factoryMissing }
-    return try await router.get(id: id)
+    return try await router.getActor(withId: id)
   }
 
   public init() {}
