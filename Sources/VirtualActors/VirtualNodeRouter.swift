@@ -10,14 +10,15 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     case noActorsAvailable
   }
   
-  // FIXME: Should be a HashRing
-  private lazy var virtualNodes: Set<VirtualNode> = .init()
+  private var virtualNodes: HashRing<VirtualNode>
   private var listeningTask: Task<Void, Never>?
 
   func terminated(actor id: ActorID) async {
-    guard let virtualNode = self.virtualNodes.first(where: { $0.id == id }) else { return }
-    try? await virtualNode.removeAll()
-    self.virtualNodes.remove(virtualNode)
+    for node in virtualNodes.nodes {
+      if node.id == id {
+        virtualNodes.removeNode(node)
+      }
+    }
   }
   
   func findVirtualNodes() {
@@ -28,7 +29,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     
     self.listeningTask = Task {
       for await virtualNode in await actorSystem.receptionist.listing(of: VirtualNode.key) {
-        self.virtualNodes.insert(virtualNode)
+        self.virtualNodes.addNode(virtualNode)
         self.watchTermination(of: virtualNode)
       }
     }
@@ -38,12 +39,8 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
   distributed func getActor<A: VirtualActor>(withId id: VirtualActorID) async throws -> A {
-    for virtualNode in virtualNodes {
-      if let actor: A = try? await virtualNode.find(id: id) {
-        return actor
-      }
-    }
-    throw Error.noActorsAvailable
+    try await self.getNode(forId: id)
+      .find(id: id)
   }
   
   
@@ -51,7 +48,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
   distributed func getNode(forId id: VirtualActorID) async throws -> VirtualNode {
-    guard let node = self.virtualNodes.randomElement() else {
+    guard let node = self.virtualNodes.getNode(for: id) else {
       // There should be always a node (at least local node), if not—something sus
       throw Error.noNodesAvailable
     }
@@ -62,12 +59,9 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   distributed func close(
     with id: ClusterSystem.ActorID
   ) async {
-    await withTaskGroup(of: Void.self) { [virtualNodes] group in
-      for virtualNode in virtualNodes {
-        group.addTask {
-          try? await virtualNode.close(with: id)
-        }
-      }
+    /// Just going through all nodes as ActorID != VirtualID
+    for virtualNode in self.virtualNodes.nodes {
+      try? await virtualNode.close(with: id)
     }
   }
   
@@ -75,9 +69,11 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   ///  - spawn—definining how an actor should be created.
   ///  Local node is created while initialising a factory.
   init(
-    actorSystem: ClusterSystem
+    actorSystem: ClusterSystem,
+    replicationFactor: Int
   ) async {
     self.actorSystem = actorSystem
+    self.virtualNodes = .init(virtualNodes: replicationFactor)
     self.findVirtualNodes()
   }
 }

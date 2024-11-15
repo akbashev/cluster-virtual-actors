@@ -11,7 +11,8 @@ public actor ClusterVirtualActorsPlugin {
   
   private var actorSystem: ClusterSystem!
   private var router: VirtualNodeRouter!
-    
+  private let replicationFactor: Int
+
   /// Get an actor and if it's not available—create it
   public func getActor<A: VirtualActor>(
     withId id: VirtualActorID,
@@ -48,7 +49,11 @@ public actor ClusterVirtualActorsPlugin {
     return try await router.getActor(withId: id)
   }
 
-  public init() {}
+  public init(
+    replicationFactor: Int = 100
+  ) {
+    self.replicationFactor = replicationFactor
+  }
 }
 
 extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
@@ -61,9 +66,11 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
   
   public func start(_ system: ClusterSystem) async throws {
     self.actorSystem = system
+    let replicationFactor = self.replicationFactor
     self.router = try await system.singleton.host(name: "virtual_actor_node_router") { actorSystem in
       await VirtualNodeRouter(
-        actorSystem: actorSystem
+        actorSystem: actorSystem,
+        replicationFactor: replicationFactor
       )
     }
   }

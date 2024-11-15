@@ -38,11 +38,11 @@ let package = Package(
                 .product(name: "DistributedCluster", package: "swift-distributed-actors"),
             ]
         ),
-//        .testTarget(
-//            name: "VirtualActorsTests",
-//            dependencies: [
-//                "VirtualActors"
-//            ]
-//        ),
+        .testTarget(
+            name: "VirtualActorsTests",
+            dependencies: [
+                "VirtualActors"
+            ]
+        ),
     ]
 )
