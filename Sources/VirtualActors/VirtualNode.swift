@@ -1,11 +1,13 @@
 import Distributed
 import DistributedCluster
 
-distributed public actor VirtualNode {
+distributed public actor VirtualNode: Addressable {
   
   public enum Error: Swift.Error {
     case noActorAvailable
   }
+  
+  nonisolated var node: Cluster.Node { self.actorSystem.cluster.node }
   
   private lazy var virtualActors: [VirtualActorID: any VirtualActor] = [:]
 

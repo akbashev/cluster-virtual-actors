@@ -1,12 +1,12 @@
 import Foundation
 import Testing
+import DistributedCluster
 @testable import VirtualActors
 
 struct HashRingTests {
   
-  struct Node: Identifiable, Hashable {
-    let id: String
-    let value: String
+  struct Node: Addressable {
+    let node: Cluster.Node
   }
   
   @Test
@@ -15,10 +15,10 @@ struct HashRingTests {
     var hashRing = HashRing<Node>(virtualNodes: 10)
     
     // Define some nodes
-    let node1 = Node(id: "node1", value: "First Node")
-    let node2 = Node(id: "node2", value: "Second Node")
-    let node3 = Node(id: "node3", value: "Third Node")
-    
+    let node1 = Node(node: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
+    let node2 = Node(node: .init(endpoint: .init(host: "host", port: 2), nid: .random()))
+    let node3 = Node(node: .init(endpoint: .init(host: "host", port: 3), nid: .random()))
+
     hashRing.addNode(node1)
     hashRing.addNode(node2)
     hashRing.addNode(node3)
@@ -47,7 +47,7 @@ struct HashRingTests {
     
     for key in keys {
       if let node = hashRing.getNode(for: key) {
-        keyDistribution[node.id.hashValue, default: 0] += 1
+        keyDistribution[node.node.hashValue, default: 0] += 1
       }
     }
     #expect(keyDistribution.keys.count <= 3, "Test 5 Failed: More nodes than expected in the distribution.")

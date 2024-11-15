@@ -1,7 +1,16 @@
+import DistributedCluster
+
+protocol Addressable: Hashable {
+  nonisolated var node: Cluster.Node { get }
+}
+
 /// A generic HashRing implementation
-struct HashRing<T: Hashable> {
+struct HashRing<T: Addressable> {
   /// Represents the virtual nodes and their corresponding real nodes
   private var ring: [Int: T] = [:]
+  /// A sorted array of keys in the ring for efficient lookup,
+  /// in combination with binarySearch should give a better perfomance.
+  private var sortedKeys: [Int] = []
   /// The list of real nodes in the ring
   private(set) var nodes: Set<T> = []
   /// Number of virtual nodes per real node
@@ -13,47 +22,62 @@ struct HashRing<T: Hashable> {
   
   /// Adds a node to the ring
   mutating func addNode(_ node: T) {
-    guard !nodes.contains(node) else { return }
+    guard !self.nodes.contains(node) else { return }
     
-    nodes.insert(node)
-    let nodeHash = node.hashValue
+    self.nodes.insert(node)
+    let nodeHash = node.node.hashValue
     for i in 0..<virtualNodes {
       let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
-      ring[virtualNodeHash] = node
+      self.ring[virtualNodeHash] = node
     }
+    self.sortedKeys = self.ring.keys.sorted()
   }
   
   /// Removes a node from the ring
   mutating func removeNode(_ node: T) {
-    guard nodes.contains(node) else { return }
+    guard self.nodes.contains(node) else { return }
     
     self.nodes.remove(node)
-    let nodeHash = node.hashValue
+    let nodeHash = node.node.hashValue
     for i in 0..<virtualNodes {
       let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
       self.ring.removeValue(forKey: virtualNodeHash)
     }
+    self.sortedKeys = self.ring.keys.sorted()
   }
   
   /// Finds the closest node to the given key in the ring
   func getNode<Key: Hashable>(for key: Key) -> T? {
     guard !self.ring.isEmpty else { return nil }
-    
-    let sortedKeys = self.ring.keys.sorted()
-    let hash = key.hashValue
-    
-    for k in sortedKeys {
-      if hash <= k {
-        return self.ring[k]
-      }
+    guard let index = self.sortedKeys.binarySearch(predicate: { $0 >= key.hashValue }) else {
+      return self.ring[self.sortedKeys.first!]
     }
-    
-    // Wrap around to the first node in the ring if no node is greater
-    return ring[sortedKeys.first!]
+    let closestKey = self.sortedKeys[index]
+    return self.ring[closestKey]
   }
   
   /// Combines a node's hash with a virtual node index
   private static func concatenate(nodeHash: Int, vnode: Int) -> Int {
     return nodeHash ^ vnode.hashValue // XOR for simplicity
+  }
+}
+
+/// Simple binary search for performance.
+private extension Array where Element: Comparable {
+  func binarySearch(predicate: (Element) -> Bool) -> Int? {
+    var low = 0
+    var high = count - 1
+    while low <= high {
+      let mid = (low + high) / 2
+      if predicate(self[mid]) {
+        high = mid - 1
+      } else {
+        low = mid + 1
+      }
+    }
+    if low < count && predicate(self[low]) {
+      return low
+    }
+    return nil
   }
 }

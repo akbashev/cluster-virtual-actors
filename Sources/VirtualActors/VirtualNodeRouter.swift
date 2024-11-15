@@ -14,10 +14,8 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   private var listeningTask: Task<Void, Never>?
 
   func terminated(actor id: ActorID) async {
-    for node in virtualNodes.nodes {
-      if node.id == id {
-        virtualNodes.removeNode(node)
-      }
+    for node in self.virtualNodes.nodes where node.id == id {
+      self.virtualNodes.removeNode(node)
     }
   }
   
@@ -39,8 +37,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
   distributed func getActor<A: VirtualActor>(withId id: VirtualActorID) async throws -> A {
-    try await self.getNode(forId: id)
-      .find(id: id)
+    try await self.getNode(forId: id).find(id: id)
   }
   
   
