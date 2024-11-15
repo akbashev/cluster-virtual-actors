@@ -45,18 +45,17 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     throw Error.noActorsAvailable
   }
   
-  /// FIXME: Change to consistent hashing
-  distributed func add<A: VirtualActor>(_ actor: A) async throws {
+  
+  /// - Parameters:
+  /// - id—external (not system) id of an actor.
+  /// - dependency—only needed when spawning an actor.
+  distributed func getNode(for id: VirtualActorID) async throws -> VirtualNode {
     guard let node = self.virtualNodes.randomElement() else {
       // There should be always a node (at least local node), if not—something sus
       throw Error.noNodesAvailable
     }
-    return try await node.register(
-      actor: actor,
-      with: actor.virtualID
-    )
+    return node
   }
-  
   
   /// Actors should be cleaned automatically, but for now unfortunately manual cleaning.
   distributed func close(
