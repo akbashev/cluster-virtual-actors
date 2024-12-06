@@ -1,6 +1,8 @@
 import Distributed
 import DistributedCluster
 
+typealias DefaultDistributedActorSystem = ClusterSystem
+
 /// Cluster system plugin to get an actor by some id
 public actor ClusterVirtualActorsPlugin {
     
@@ -14,39 +16,30 @@ public actor ClusterVirtualActorsPlugin {
   private let replicationFactor: Int
 
   /// Get an actor and if it's not available—create it
-  public func getActor<A: VirtualActor>(
-    withId id: VirtualActorID,
-    _ build: @Sendable (ClusterSystem) async throws -> A
-  ) async throws -> A {
+  public func getActor<A: VirtualActor, D: VirtualActorDependency>(
+    identifiedBy id: VirtualActorID,
+    dependency: D
+  ) async throws -> A where A: Codable {
+    guard let router else { throw Error.factoryMissing }
+    let node = try await self.router.getNode(identifiedBy: id)
     do {
       /// Try to get an actor by id
-      return try await self.getActor(withId: id)
+      self.actorSystem.log.info("Getting actor \(id) from \(node.id)")
+      return try await node.findActor(identifiedBy: id)
     } catch {
       switch error {
-      /// If there are no actors available—let's try to build it
-      case VirtualNodeRouter.Error.noActorsAvailable:
-        /// Get appropriate node
-        let node = try await router.getNode(forId: id)
-        /// Pass cluster system of this node
-        let actor = try await build(node.actorSystem)
+        /// If there are no actors available—let's try to build it
+      case VirtualNodeError.actorIsMissing:
         /// Register actor on this node (for future lookups)
-        try await node.register(
-          actor: actor,
-          with: actor.virtualID
+        self.actorSystem.log.info("Registered actor \(id) on \(node.id)")
+        return try await node.spawn(
+          identifiedBy: id,
+          dependency: dependency
         )
-        return actor
       default:
         throw error
       }
     }
-  }
-  
-  /// Just get an actor
-  public func getActor<A: VirtualActor>(
-    withId id: VirtualActorID
-  ) async throws -> A {
-    guard let router else { throw Error.factoryMissing }
-    return try await router.getActor(withId: id)
   }
 
   public init(
@@ -85,7 +78,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
   }
   
   nonisolated public func onResignID(_ id: ClusterSystem.ActorID) {
-    Task { [weak self] in try await self?.router?.close(with: id) }
+    // no-op
   }
   
 }

@@ -1,39 +1,37 @@
 import Distributed
 import DistributedCluster
 
-distributed public actor VirtualNode: Addressable {
+distributed public actor VirtualNode: Routable {
   
-  public enum Error: Swift.Error {
-    case noActorAvailable
-  }
+  nonisolated var address: Cluster.Node { self.actorSystem.cluster.node }
   
-  nonisolated var node: Cluster.Node { self.actorSystem.cluster.node }
+  private var virtualActors: [VirtualActorID: any VirtualActor] = [:]
   
-  private lazy var virtualActors: [VirtualActorID: any VirtualActor] = [:]
-
-  distributed func register<A: VirtualActor>(actor: A, with id: VirtualActorID) {
-    self.virtualActors[id] = actor
-  }
-  
-  distributed public func find<A: VirtualActor>(id: VirtualActorID) async throws -> A {
-    guard let actor = self.virtualActors[id] as? A else {
-      throw Error.noActorAvailable
-    }
+  distributed public func findActor<A: VirtualActor>(identifiedBy id: VirtualActorID) async throws -> A {
+    guard let actor = self.virtualActors[id] else { throw VirtualNodeError.actorIsMissing }
+    guard let actor = actor as? A else { throw VirtualNodeError.typeMismatch }
     return actor
   }
   
-  distributed public func close(
-    with id: ClusterSystem.ActorID
-  ) async {
-    let value = self.virtualActors.first(where: { $0.value.id == id })
-    if let virtualId = value?.key {
-      self.virtualActors.removeValue(forKey: virtualId)
-    }
+  distributed func spawn<A: VirtualActor, D: VirtualActorDependency>(identifiedBy id: VirtualActorID, dependency: D) async throws -> A {
+    let actor = try await A.spawn(on: self.actorSystem, dependency: dependency)
+    self.virtualActors[id] = actor
+    return actor
   }
   
-  distributed public func removeAll() {
-    self.virtualActors.removeAll()
-  }
+//  /// For future use—we should manage lifecycle of an virtual actor somehow.
+//  distributed public func closeActor(
+//    identifiedBy id: ClusterSystem.ActorID
+//  ) async {
+//    let value = self.virtualActors.first(where: { $0.value.id == id })
+//    if let virtualId = value?.key {
+//      self.virtualActors.removeValue(forKey: virtualId)
+//    }
+//  }
+//  
+//  distributed public func removeAll() {
+//    self.virtualActors.removeAll()
+//  }
 
   public init(
     actorSystem: ClusterSystem
@@ -43,6 +41,11 @@ distributed public actor VirtualNode: Addressable {
       .receptionist
       .checkIn(self, with: Self.key)
   }
+}
+
+public enum VirtualNodeError: Error, Codable {
+  case actorIsMissing
+  case typeMismatch
 }
 
 extension VirtualNode {

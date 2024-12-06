@@ -1,11 +1,11 @@
 import DistributedCluster
 
-protocol Addressable: Hashable {
-  nonisolated var node: Cluster.Node { get }
+protocol Routable: Hashable {
+  nonisolated var address: Cluster.Node { get }
 }
 
 /// A generic HashRing implementation
-struct HashRing<T: Addressable> {
+struct HashRing<T: Routable> {
   /// Represents the virtual nodes and their corresponding real nodes
   private var ring: [Int: T] = [:]
   /// A sorted array of keys in the ring for efficient lookup,
@@ -25,7 +25,7 @@ struct HashRing<T: Addressable> {
     guard !self.nodes.contains(node) else { return }
     
     self.nodes.insert(node)
-    let nodeHash = node.node.hashValue
+    let nodeHash = node.address.hashValue
     for i in 0..<virtualNodes {
       let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
       self.ring[virtualNodeHash] = node
@@ -38,7 +38,7 @@ struct HashRing<T: Addressable> {
     guard self.nodes.contains(node) else { return }
     
     self.nodes.remove(node)
-    let nodeHash = node.node.hashValue
+    let nodeHash = node.address.hashValue
     for i in 0..<virtualNodes {
       let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
       self.ring.removeValue(forKey: virtualNodeHash)
