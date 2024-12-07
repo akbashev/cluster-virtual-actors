@@ -13,7 +13,7 @@ distributed public actor VirtualNode: Routable {
     return actor
   }
   
-  distributed func spawn<A: VirtualActor, D: VirtualActorDependency>(identifiedBy id: VirtualActorID, dependency: D) async throws -> A {
+  distributed func spawn<A: VirtualActor, D: Sendable & Codable>(identifiedBy id: VirtualActorID, dependency: D) async throws -> A {
     let actor = try await A.spawn(on: self.actorSystem, dependency: dependency)
     self.virtualActors[id] = actor
     return actor

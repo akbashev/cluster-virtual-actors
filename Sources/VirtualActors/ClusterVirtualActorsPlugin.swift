@@ -16,7 +16,7 @@ public actor ClusterVirtualActorsPlugin {
   private let replicationFactor: Int
 
   /// Get an actor and if it's not available—create it
-  public func getActor<A: VirtualActor, D: VirtualActorDependency>(
+  public func getActor<A: VirtualActor, D: Codable & Sendable>(
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A where A: Codable {
