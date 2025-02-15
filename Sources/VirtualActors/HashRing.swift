@@ -5,6 +5,7 @@ protocol Routable: Hashable {
 }
 
 /// A generic HashRing implementation
+// FIXME: Test more, check different edge-cases
 struct HashRing<T: Routable> {
   /// Represents the virtual nodes and their corresponding real nodes
   private var ring: [Int: T] = [:]
@@ -15,15 +16,15 @@ struct HashRing<T: Routable> {
   private(set) var nodes: Set<T> = []
   /// Number of virtual nodes per real node
   private var virtualNodes: Int
-  
+
   init(virtualNodes: Int = 100) {
     self.virtualNodes = virtualNodes
   }
-  
+
   /// Adds a node to the ring
   mutating func addNode(_ node: T) {
     guard !self.nodes.contains(node) else { return }
-    
+
     self.nodes.insert(node)
     let nodeHash = node.address.hashValue
     for i in 0..<virtualNodes {
@@ -32,11 +33,11 @@ struct HashRing<T: Routable> {
     }
     self.sortedKeys = self.ring.keys.sorted()
   }
-  
+
   /// Removes a node from the ring
   mutating func removeNode(_ node: T) {
     guard self.nodes.contains(node) else { return }
-    
+
     self.nodes.remove(node)
     let nodeHash = node.address.hashValue
     for i in 0..<virtualNodes {
@@ -45,7 +46,7 @@ struct HashRing<T: Routable> {
     }
     self.sortedKeys = self.ring.keys.sorted()
   }
-  
+
   /// Finds the closest node to the given key in the ring
   func getNode<Key: Hashable>(for key: Key) -> T? {
     guard !self.ring.isEmpty else { return nil }
@@ -55,16 +56,16 @@ struct HashRing<T: Routable> {
     let closestKey = self.sortedKeys[index]
     return self.ring[closestKey]
   }
-  
+
   /// Combines a node's hash with a virtual node index
   private static func concatenate(nodeHash: Int, vnode: Int) -> Int {
-    return nodeHash ^ vnode.hashValue // XOR for simplicity
+    nodeHash ^ vnode.hashValue  // XOR for simplicity// XOR for simplicity
   }
 }
 
 /// Simple binary search for performance.
-private extension Array where Element: Comparable {
-  func binarySearch(predicate: (Element) -> Bool) -> Int? {
+extension Array where Element: Comparable {
+  fileprivate func binarySearch(predicate: (Element) -> Bool) -> Int? {
     var low = 0
     var high = count - 1
     while low <= high {
