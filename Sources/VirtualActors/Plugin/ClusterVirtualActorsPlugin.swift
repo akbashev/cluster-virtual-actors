@@ -1,5 +1,5 @@
 import Distributed
-import DistributedCluster
+@preconcurrency import DistributedCluster
 
 typealias DefaultDistributedActorSystem = ClusterSystem
 
@@ -17,12 +17,12 @@ public actor ClusterVirtualActorsPlugin {
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
   /// Get an actor and if it's not available—create it
-  public func getActor<A: VirtualActor, D: Codable & Sendable>(
+  public func getActor<A: VirtualActor>(
     identifiedBy id: VirtualActorID,
-    dependency: D
+    dependency: A.Dependency
   ) async throws -> A where A: Codable {
     guard let router else { throw Error.factoryMissing }
-    return try await self.router.getActor(
+    return try await router.getActor(
       identifiedBy: id,
       dependency: dependency
     )

@@ -16,9 +16,9 @@ distributed public actor VirtualNode: Routable {
   }
 
   // TODO: Check for reentrancy issues and probably add queueing
-  distributed func spawnActor<A: VirtualActor, D: Sendable & Codable>(
+  distributed func spawnActor<A: VirtualActor>(
     identifiedBy id: VirtualActorID,
-    dependency: D
+    dependency: A.Dependency
   ) async throws -> A {
     let actor = try await A.spawn(on: self.actorSystem, dependency: dependency)
     actor.metadata[keyPath: \.virtualId] = id
