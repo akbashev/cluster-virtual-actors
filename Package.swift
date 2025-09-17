@@ -28,7 +28,7 @@ let package = Package(
   ],
   dependencies: [
     .package(
-      url: "https://github.com/akbashev/swift-distributed-actors.git",
+      url: "https://github.com/apple/swift-distributed-actors.git",
       branch: "main"
     ),
     .package(
