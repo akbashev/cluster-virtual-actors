@@ -38,9 +38,9 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// - Parameters:
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
-  distributed func getActor<A: VirtualActor>(
+  distributed func getActor<A: VirtualActor, D: Sendable & Codable>(
     identifiedBy id: VirtualActorID,
-    dependency: A.Dependency
+    dependency: D
   ) async throws -> A {
     guard let node = self.virtualNodes.getNode(for: id.rawValue) else { throw Error.noNodesAvailable }
     do {
