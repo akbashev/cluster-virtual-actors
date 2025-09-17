@@ -1,5 +1,5 @@
 import Distributed
-import DistributedCluster
+@preconcurrency import DistributedCluster
 
 typealias DefaultDistributedActorSystem = ClusterSystem
 
@@ -12,7 +12,13 @@ public actor ClusterVirtualActorsPlugin {
   }
 
   private var actorSystem: ClusterSystem!
-  private var router: VirtualNodeRouter!
+  private var router: VirtualNodeRouter {
+    get async throws {
+      try await self.actorSystem
+        .singleton
+        .proxy(VirtualNodeRouter.self, name: "virtual_actor_node_router")
+    }
+  }
   private let replicationFactor: Int
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
@@ -21,8 +27,8 @@ public actor ClusterVirtualActorsPlugin {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A where A: Codable {
-    guard let router else { throw Error.factoryMissing }
-    return try await self.router.getActor(
+    let router = try await self.router
+    return try await router.getActor(
       identifiedBy: id,
       dependency: dependency
     )
@@ -61,7 +67,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
 
   public func start(_ system: ClusterSystem) async throws {
     self.actorSystem = system
-    self.router = try await system.singleton.host(name: "virtual_actor_node_router") {
+    try await system.singleton.host(name: "virtual_actor_node_router") {
       [replicationFactor, idleTimeoutSettings] actorSystem in
       await VirtualNodeRouter(
         actorSystem: actorSystem,
@@ -73,7 +79,6 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
 
   public func stop(_ system: ClusterSystem) async {
     self.actorSystem = nil
-    self.router = nil
   }
 
   nonisolated public func onActorReady<Act: DistributedActor>(_ actor: Act)

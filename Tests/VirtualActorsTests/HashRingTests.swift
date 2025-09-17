@@ -25,11 +25,11 @@ struct HashRingTests {
     hashRing.addNode(node3)
 
     #expect(
-      hashRing.getNode(for: "key1".hashValue) != nil,
+      hashRing.getNode(for: "key1") != nil,
       "Test 1 Failed: Key should be assigned to a node."
     )
 
-    let testKey = "testKey".hashValue
+    let testKey = "testKey"
     let assignedNode1 = hashRing.getNode(for: testKey)
 
     #expect(assignedNode1 != nil, "Test 2 Failed: Key not assigned to any node.")
@@ -49,7 +49,7 @@ struct HashRingTests {
       "Test 4 Failed: Key mapping not consistent after re-adding the node."
     )
 
-    let keys = (1...100).map { "key\($0)".hashValue }
+    let keys = (1...100).map { "key\($0)" }
     var keyDistribution: [Int: Int] = [:]  // Maps node hash to count
 
     for key in keys {

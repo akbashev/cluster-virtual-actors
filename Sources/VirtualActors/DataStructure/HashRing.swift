@@ -8,10 +8,10 @@ protocol Routable: Hashable {
 // FIXME: Test more, check different edge-cases
 struct HashRing<T: Routable> {
   /// Represents the virtual nodes and their corresponding real nodes
-  private var ring: [Int: T] = [:]
+  private var ring: [UInt64: T] = [:]
   /// A sorted array of keys in the ring for efficient lookup,
   /// in combination with binarySearch should give a better perfomance.
-  private var sortedKeys: [Int] = []
+  private var sortedKeys: [UInt64] = []
   /// The list of real nodes in the ring
   private(set) var nodes: Set<T> = []
   /// Number of virtual nodes per real node
@@ -26,7 +26,7 @@ struct HashRing<T: Routable> {
     guard !self.nodes.contains(node) else { return }
 
     self.nodes.insert(node)
-    let nodeHash = node.address.hashValue
+    let nodeHash = node.address.stableHashValue
     for i in 0..<virtualNodes {
       let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
       self.ring[virtualNodeHash] = node
@@ -39,7 +39,7 @@ struct HashRing<T: Routable> {
     guard self.nodes.contains(node) else { return }
 
     self.nodes.remove(node)
-    let nodeHash = node.address.hashValue
+    let nodeHash = node.address.stableHashValue
     for i in 0..<virtualNodes {
       let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
       self.ring.removeValue(forKey: virtualNodeHash)
@@ -48,24 +48,25 @@ struct HashRing<T: Routable> {
   }
 
   /// Finds the closest node to the given key in the ring
-  func getNode<Key: Hashable>(for key: Key) -> T? {
+  func getNode(for key: String) -> T? {
     guard !self.ring.isEmpty else { return nil }
-    guard let index = self.sortedKeys.binarySearch(predicate: { $0 >= key.hashValue }) else {
+    guard let closestKey = self.sortedKeys.binarySearch(predicate: { $0 >= key.stableHash }) else {
       return self.ring[self.sortedKeys.first!]
     }
-    let closestKey = self.sortedKeys[index]
     return self.ring[closestKey]
   }
 
   /// Combines a node's hash with a virtual node index
-  private static func concatenate(nodeHash: Int, vnode: Int) -> Int {
-    nodeHash ^ vnode.hashValue  // XOR for simplicity// XOR for simplicity
+  private static func concatenate(nodeHash: UInt64, vnode: Int) -> UInt64 {
+    var x = nodeHash &* 0x9e37_79b9_7f4a_7c15
+    x ^= UInt64(vnode) &* 0x9e37_79b9_7f4a_7c15
+    return x
   }
 }
 
 /// Simple binary search for performance.
 extension Array where Element: Comparable {
-  fileprivate func binarySearch(predicate: (Element) -> Bool) -> Int? {
+  fileprivate func binarySearch(predicate: (Element) -> Bool) -> Element? {
     var low = 0
     var high = count - 1
     while low <= high {
@@ -76,8 +77,8 @@ extension Array where Element: Comparable {
         low = mid + 1
       }
     }
-    if low < count && predicate(self[low]) {
-      return low
+    if low < count, predicate(self[low]) {
+      return self[low]  // return element instead of index
     }
     return nil
   }

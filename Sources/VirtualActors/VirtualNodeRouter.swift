@@ -42,7 +42,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A {
-    guard let node = self.virtualNodes.getNode(for: id) else { throw Error.noNodesAvailable }
+    guard let node = self.virtualNodes.getNode(for: id.rawValue) else { throw Error.noNodesAvailable }
     do {
       /// Try to get an actor by id
       self.actorSystem.log.info("Getting actor \(id) from \(node.id)")
@@ -72,9 +72,11 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   }
 
   distributed func markAsActive<A: VirtualActor>(actor: A) async {
-    guard self.idleTimeoutSettings.isEnabled, let virtualId = self.actorIdToVirtualId[actor.id]
+    guard
+      self.idleTimeoutSettings.isEnabled,
+      let virtualId = self.actorIdToVirtualId[actor.id]
     else { return }
-    try? await self.virtualNodes.getNode(for: virtualId)?.markActorAsActive(identifiedBy: virtualId)
+    try? await self.virtualNodes.getNode(for: virtualId.rawValue)?.markActorAsActive(identifiedBy: virtualId)
   }
 
   distributed func cleanActor(identifiedBy id: ClusterSystem.ActorID) {

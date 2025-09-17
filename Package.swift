@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -27,12 +27,18 @@ let package = Package(
     )
   ],
   dependencies: [
-    // TODO: Update when all PRs are merged
     .package(
-      url: "https://github.com/akbashev/swift-distributed-actors.git",
-      branch: "presentation"
+      url: "https://github.com/apple/swift-distributed-actors.git",
+      branch: "main"
     ),
-    .package(url: "https://github.com/apple/swift-async-algorithms.git", from: "1.0.0"),
+    .package(
+      url: "https://github.com/apple/swift-async-algorithms.git",
+      from: "1.0.0"
+    ),
+    .package(
+      url: "https://github.com/apple/swift-crypto.git",
+      from: "3.12.0"
+    ),
   ],
   targets: [
     // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -45,6 +51,7 @@ let package = Package(
           package: "swift-distributed-actors"
         ),
         .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+        .product(name: "_CryptoExtras", package: "swift-crypto"),
       ]
     ),
     .testTarget(
