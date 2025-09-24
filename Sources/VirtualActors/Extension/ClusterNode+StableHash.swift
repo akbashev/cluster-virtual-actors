@@ -1,6 +1,5 @@
 import CryptoKit
 import DistributedCluster
-import Foundation
 
 // MARK: - Stable Hash Extensions
 extension Cluster.Node {
