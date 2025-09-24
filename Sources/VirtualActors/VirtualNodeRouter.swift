@@ -86,11 +86,11 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
 
   init(
     actorSystem: ClusterSystem,
-    replicationFactor: Int,
+    replicationFactor: UInt64,
     idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
   ) async {
     self.actorSystem = actorSystem
-    self.virtualNodes = .init(virtualNodes: replicationFactor)
+    self.virtualNodes = .init(virtualNodes: UInt64(replicationFactor))
     self.idleTimeoutSettings = idleTimeoutSettings
     self.findVirtualNodes()
   }

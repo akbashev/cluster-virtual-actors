@@ -19,7 +19,7 @@ public actor ClusterVirtualActorsPlugin {
         .proxy(VirtualNodeRouter.self, name: "virtual_actor_node_router")
     }
   }
-  private let replicationFactor: Int
+  private let replicationFactor: UInt64
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
   /// Get an actor and if it's not available—create it
@@ -35,7 +35,7 @@ public actor ClusterVirtualActorsPlugin {
   }
 
   public init(
-    replicationFactor: Int = 100,
+    replicationFactor: UInt64 = 100,
     idleTimeoutSettings: VirtualNode.IdleTimeoutSettings = .init(
       isEnabled: false,
       cleaningInterval: .seconds(60),

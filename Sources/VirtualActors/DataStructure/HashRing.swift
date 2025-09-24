@@ -5,20 +5,20 @@ protocol Routable: Hashable {
 }
 
 /// A generic HashRing implementation
-// FIXME: Test more, check different edge-cases
+// FIXME: Test more, check different edge-cases.
 struct HashRing<T: Routable> {
   /// Represents the virtual nodes and their corresponding real nodes
   private var ring: [UInt64: T] = [:]
-  /// A sorted array of keys in the ring for efficient lookup,
-  /// in combination with binarySearch should give a better perfomance.
+  /// A sorted array of keys in the ring for efficient lookup
+  // TODO: We need to sort every time, probably some tree or binary insert is better here?
   private var sortedKeys: [UInt64] = []
   /// The list of real nodes in the ring
   private(set) var nodes: Set<T> = []
   /// Number of virtual nodes per real node
-  private var virtualNodes: Int
+  private var virtualNodes: UInt64
 
-  init(virtualNodes: Int = 100) {
-    self.virtualNodes = virtualNodes
+  init(virtualNodes: UInt64 = 150) {
+    self.virtualNodes = max(virtualNodes, 50)
   }
 
   /// Adds a node to the ring
@@ -26,11 +26,12 @@ struct HashRing<T: Routable> {
     guard !self.nodes.contains(node) else { return }
 
     self.nodes.insert(node)
-    let nodeHash = node.address.stableHashValue
-    for i in 0..<virtualNodes {
-      let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
+
+    for i in 0..<self.virtualNodes {
+      let virtualNodeHash = node.concatenate(vnode: i)
       self.ring[virtualNodeHash] = node
     }
+
     self.sortedKeys = self.ring.keys.sorted()
   }
 
@@ -39,47 +40,42 @@ struct HashRing<T: Routable> {
     guard self.nodes.contains(node) else { return }
 
     self.nodes.remove(node)
-    let nodeHash = node.address.stableHashValue
-    for i in 0..<virtualNodes {
-      let virtualNodeHash = HashRing.concatenate(nodeHash: nodeHash, vnode: i)
+
+    for i in 0..<self.virtualNodes {
+      let virtualNodeHash = node.concatenate(vnode: i)
       self.ring.removeValue(forKey: virtualNodeHash)
     }
+
     self.sortedKeys = self.ring.keys.sorted()
   }
 
   /// Finds the closest node to the given key in the ring
+  // TODO: Probably add generic StableHashable? protocol and conform String, UUID, Int, etc... to it.
   func getNode(for key: String) -> T? {
     guard !self.ring.isEmpty else { return nil }
-    guard let closestKey = self.sortedKeys.binarySearch(predicate: { $0 >= key.stableHash }) else {
-      return self.ring[self.sortedKeys.first!]
+    guard let closestKeyIndex = self.sortedKeys.index(for: key.stableHash) else {
+      // we already checked if not empty
+      return self.ring[sortedKeys[0]]
     }
-    return self.ring[closestKey]
-  }
 
-  /// Combines a node's hash with a virtual node index
-  private static func concatenate(nodeHash: UInt64, vnode: Int) -> UInt64 {
-    var x = nodeHash &* 0x9e37_79b9_7f4a_7c15
-    x ^= UInt64(vnode) &* 0x9e37_79b9_7f4a_7c15
-    return x
+    return self.ring[sortedKeys[closestKeyIndex]]
   }
 }
 
-/// Simple binary search for performance.
 extension Array where Element: Comparable {
-  fileprivate func binarySearch(predicate: (Element) -> Bool) -> Element? {
-    var low = 0
-    var high = count - 1
-    while low <= high {
-      let mid = (low + high) / 2
-      if predicate(self[mid]) {
-        high = mid - 1
-      } else {
+  fileprivate func index(for target: Element) -> Index? {
+    var low = startIndex
+    var high = endIndex
+
+    while low < high {
+      let mid = low + (high - low) / 2
+      if self[mid] < target {
         low = mid + 1
+      } else {
+        high = mid
       }
     }
-    if low < count, predicate(self[low]) {
-      return self[low]  // return element instead of index
-    }
-    return nil
+
+    return low < count ? low : nil
   }
 }
