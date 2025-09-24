@@ -12,13 +12,7 @@ public actor ClusterVirtualActorsPlugin {
   }
 
   private var actorSystem: ClusterSystem!
-  private var router: VirtualNodeRouter {
-    get async throws {
-      try await self.actorSystem
-        .singleton
-        .proxy(VirtualNodeRouter.self, name: "virtual_actor_node_router")
-    }
-  }
+  private var router: VirtualNodeRouter?
   private let replicationFactor: UInt64
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
@@ -27,7 +21,7 @@ public actor ClusterVirtualActorsPlugin {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A where A: Codable {
-    let router = try await self.router
+    guard let router else { throw Error.factoryMissing }
     return try await router.getActor(
       identifiedBy: id,
       dependency: dependency
@@ -48,12 +42,12 @@ public actor ClusterVirtualActorsPlugin {
 
   // TODO: Should it be fire and forget or better make it await?
   nonisolated func markAsActive<A: VirtualActor>(actor: A) {
-    Task { try? await self.router.markAsActive(actor: actor) }
+    Task { try? await self.router?.markAsActive(actor: actor) }
   }
 
   // TODO: Should it be fire and forget or better make it await?
   nonisolated func cleanActor(identifiedBy id: ClusterSystem.ActorID) {
-    Task { try? await self.router.cleanActor(identifiedBy: id) }
+    Task { try? await self.router?.cleanActor(identifiedBy: id) }
   }
 }
 
@@ -67,7 +61,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
 
   public func start(_ system: ClusterSystem) async throws {
     self.actorSystem = system
-    try await system.singleton.host(name: "virtual_actor_node_router") {
+    self.router = try await system.singleton.host(name: "virtual_actor_node_router") {
       [replicationFactor, idleTimeoutSettings] actorSystem in
       await VirtualNodeRouter(
         actorSystem: actorSystem,
@@ -79,6 +73,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
 
   public func stop(_ system: ClusterSystem) async {
     self.actorSystem = nil
+    self.router = nil
   }
 
   nonisolated public func onActorReady<Act: DistributedActor>(_ actor: Act)

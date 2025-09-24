@@ -1,5 +1,4 @@
 import DistributedCluster
-import Foundation
 import Testing
 
 @testable import VirtualActors

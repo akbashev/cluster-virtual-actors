@@ -1,6 +1,5 @@
-import CryptoKit
+import CryptoKit // FIXME: Remove
 import DistributedCluster
-import Foundation
 
 // MARK: - Stable Hash Extensions
 extension Cluster.Node {

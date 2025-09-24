@@ -1,5 +1,4 @@
 import Crypto
-import Foundation
 
 extension FixedWidthInteger {
   var bigEndianBytes: [UInt8] {
