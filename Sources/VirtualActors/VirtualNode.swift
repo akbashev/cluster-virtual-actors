@@ -36,6 +36,7 @@ distributed public actor VirtualNode: Routable {
       self.startCleaning(using: settings)
     } else {
       self.cleaningTask?.cancel()
+      self.cleaningTask = nil
     }
   }
 
@@ -50,7 +51,7 @@ distributed public actor VirtualNode: Routable {
 
   private var cleaningTask: Task<Void, Never>?
   private func startCleaning(using idleTimeoutSettings: IdleTimeoutSettings) {
-    guard idleTimeoutSettings.isEnabled else { return }
+    guard idleTimeoutSettings.isEnabled, self.cleaningTask == nil else { return }
     let sequence = AsyncTimerSequence<ContinuousClock>(
       interval: idleTimeoutSettings.cleaningInterval,
       clock: .continuous
@@ -58,12 +59,20 @@ distributed public actor VirtualNode: Routable {
     self.cleaningTask = Task {
       for await _ in sequence {
         guard !Task.isCancelled else { return }
-        for (id, reference) in self.virtualActors
-        where (ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout) {
-          self.actorSystem.log.info("Found inactive actor \(id), cleaning...")
-          self.virtualActors.removeValue(forKey: id)
-        }
+        self.checkTimedOutActors(idleTimeoutSettings: idleTimeoutSettings)
       }
+    }
+  }
+
+  private func checkTimedOutActors(idleTimeoutSettings: IdleTimeoutSettings) {
+    var idsToRemove: [VirtualActorID] = []
+    for (id, reference) in self.virtualActors where (ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout) {
+      idsToRemove.append(id)
+    }
+    guard !idsToRemove.isEmpty else { return }
+    self.actorSystem.log.info("Found inactive actor \(idsToRemove), cleaning...")
+    for id in idsToRemove {
+      self.virtualActors.removeValue(forKey: id)
     }
   }
 

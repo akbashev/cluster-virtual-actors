@@ -11,6 +11,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
 
   private var virtualNodes: HashRing<VirtualNode>
   private var actorIdToVirtualId: [ClusterSystem.ActorID: VirtualActorID] = [:]
+  private var inFlight: [VirtualActorID: Task<any VirtualActor, Swift.Error>] = [:]
   private var listeningTask: Task<Void, Never>?
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
@@ -28,11 +29,16 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
 
     self.listeningTask = Task {
       for await virtualNode in await self.actorSystem.receptionist.listing(of: VirtualNode.key) {
-        self.virtualNodes.addNode(virtualNode)
-        self.watchTermination(of: virtualNode)
-        try? await virtualNode.updateTimeoutSettings(self.idleTimeoutSettings)
+        guard !Task.isCancelled else { return }
+        await self.add(node: virtualNode)
       }
     }
+  }
+
+  private func add(node virtualNode: VirtualNode) async {
+    self.virtualNodes.addNode(virtualNode)
+    self.watchTermination(of: virtualNode)
+    try? await virtualNode.updateTimeoutSettings(self.idleTimeoutSettings)
   }
 
   /// - Parameters:
@@ -42,33 +48,46 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A {
+    defer { self.inFlight[id] = nil }
     guard let node = self.virtualNodes.getNode(for: id.rawValue) else { throw Error.noNodesAvailable }
-    do {
-      /// Try to get an actor by id
-      self.actorSystem.log.info("Getting actor \(id) from \(node.id)")
-      let actor: A = try await node.findActor(identifiedBy: id)
-      if self.idleTimeoutSettings.isEnabled {
-        self.actorIdToVirtualId[actor.id] = id
-      }
-      return actor
-    } catch {
-      switch error {
-      /// If there are no actors available—let's try to build it
-      case VirtualNodeError.actorIsMissing:
-        /// Register actor on this node (for future lookups)
-        self.actorSystem.log.info("Registered actor \(id) on \(node.id)")
-        let actor: A = try await node.spawnActor(
-          identifiedBy: id,
-          dependency: dependency
-        )
+
+    if let task = self.inFlight[id] {
+      let actor = try await task.value
+      guard let typed = actor as? A else { throw VirtualNodeError.typeMismatch }
+      return typed
+    }
+    let task = Task<any VirtualActor, Swift.Error> {
+      do {
+        /// Try to get an actor by id
+        self.actorSystem.log.info("Getting actor \(id) from \(node.id)")
+        let actor: A = try await node.findActor(identifiedBy: id)
         if self.idleTimeoutSettings.isEnabled {
           self.actorIdToVirtualId[actor.id] = id
         }
         return actor
-      default:
-        throw error
+      } catch {
+        switch error {
+        /// If there are no actors available—let's try to build it
+        case VirtualNodeError.actorIsMissing:
+          /// Register actor on this node (for future lookups)
+          self.actorSystem.log.info("Registered actor \(id) on \(node.id)")
+          let actor: A = try await node.spawnActor(
+            identifiedBy: id,
+            dependency: dependency
+          )
+          if self.idleTimeoutSettings.isEnabled {
+            self.actorIdToVirtualId[actor.id] = id
+          }
+          return actor
+        default:
+          throw error
+        }
       }
     }
+    self.inFlight[id] = task
+    let actor = try await task.value
+    guard let typed = actor as? A else { throw VirtualNodeError.typeMismatch }
+    return typed
   }
 
   distributed func markAsActive<A: VirtualActor>(actor: A) async {
@@ -92,6 +111,9 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     self.actorSystem = actorSystem
     self.virtualNodes = .init(virtualNodesCount: UInt64(replicationFactor))
     self.idleTimeoutSettings = idleTimeoutSettings
+    for virtualNode in await self.actorSystem.receptionist.lookup(VirtualNode.key) {
+      await self.add(node: virtualNode)
+    }
     self.findVirtualNodes()
   }
 }
