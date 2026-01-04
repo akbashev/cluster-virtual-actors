@@ -1,16 +1,17 @@
-import Crypto
+extension Routable {
+  func concatenate(vnode: UInt64) -> HashKey {
+    let nodeKey = self.address.stableHashKey
+    var bytes: [UInt8] = []
+    bytes.reserveCapacity(24)
+    bytes.append(contentsOf: nodeKey.first.bigEndianBytes)
+    bytes.append(contentsOf: nodeKey.second.bigEndianBytes)
+    bytes.append(contentsOf: vnode.bigEndianBytes)
+    return HashKey.digest(bytes)
+  }
+}
 
 extension FixedWidthInteger {
   var bigEndianBytes: [UInt8] {
     withUnsafeBytes(of: self.bigEndian) { Array($0) }
-  }
-}
-
-extension Routable {
-  func concatenate(vnode: UInt64) -> UInt64 {
-    let inputBytes = address.stableHashValue.bigEndianBytes + vnode.bigEndianBytes
-    return SHA256.hash(data: inputBytes)
-      .prefix(8)
-      .reduce(0) { ($0 << 8) | UInt64($1) }
   }
 }

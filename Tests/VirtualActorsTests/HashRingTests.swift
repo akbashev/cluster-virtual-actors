@@ -12,7 +12,7 @@ struct HashRingTests {
   @Test
   func testHashRing() {
     // Initialize a HashRing with virtual nodes
-    var hashRing = HashRing<Node>(virtualNodes: 10)
+    var hashRing = HashRing<Node>(virtualNodesCount: 10)
 
     // Define some nodes
     let node1 = Node(address: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
@@ -72,5 +72,116 @@ struct HashRingTests {
     }
 
     print("All tests passed!")
+  }
+
+  @Test
+  func testStableHashIgnoresNid() {
+    let endpoint = Cluster.Endpoint(host: "host", port: 1)
+    let nodeA = Cluster.Node(endpoint: endpoint, nid: .random())
+    let nodeB = Cluster.Node(endpoint: endpoint, nid: .random())
+
+    #expect(
+      nodeA.stableHashKey == nodeB.stableHashKey,
+      "Hash should ignore nid to keep endpoint-only stability."
+    )
+  }
+
+  @Test
+  func testEndpointHashIgnoresSystemName() {
+    let endpointA = Cluster.Endpoint(protocol: "sact", systemName: "a", host: "host", port: 1)
+    let endpointB = Cluster.Endpoint(protocol: "sact", systemName: "b", host: "host", port: 1)
+
+    #expect(
+      endpointA.stableHashKey == endpointB.stableHashKey,
+      "Endpoint hash should ignore systemName to match endpoint equality."
+    )
+  }
+
+  @Test
+  func testUInt64KeyRouting() {
+    var hashRing = HashRing<Node>(virtualNodesCount: 3)
+    let node = Node(address: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
+    hashRing.addNode(node)
+
+    let assigned = hashRing.getNode(for: UInt64(42))
+    #expect(assigned == node, "UInt64 keys should be routable.")
+  }
+
+  @Test
+  func testSingleNodeAlwaysSelected() {
+    var hashRing = HashRing<Node>(virtualNodesCount: 5)
+    let node = Node(address: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
+    hashRing.addNode(node)
+
+    let keys = (1...50).map { "key\($0)" }
+    for key in keys {
+      #expect(hashRing.getNode(for: key) == node, "Single node should own all keys.")
+    }
+  }
+
+  @Test
+  func testIdempotentAddRemove() {
+    var hashRing = HashRing<Node>(virtualNodesCount: 7)
+    let node = Node(address: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
+
+    hashRing.addNode(node)
+    let firstAssigned = hashRing.getNode(for: "key")!
+
+    hashRing.addNode(node)
+    let secondAssigned = hashRing.getNode(for: "key")!
+    #expect(firstAssigned == secondAssigned, "Adding the same node should be idempotent.")
+
+    hashRing.removeNode(node)
+    hashRing.removeNode(node)
+    #expect(hashRing.getNode(for: "key") == nil, "Removing the same node should be idempotent.")
+  }
+
+  @Test
+  func testRingWrapAround() {
+    var hashRing = HashRing<Node>(virtualNodesCount: 3)
+    let node = Node(address: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
+    hashRing.addNode(node)
+
+    let maxKey = HashKey(first: UInt64.max, second: UInt64.max)
+    let assigned = hashRing.getNode(for: maxKey)
+    #expect(assigned == node, "Keys beyond the last vnode should wrap to the first key.")
+  }
+
+  @Test
+  func testReaddRestoresMapping() {
+    var hashRing = HashRing<Node>(virtualNodesCount: 15)
+    let node1 = Node(address: .init(endpoint: .init(host: "host", port: 1), nid: .random()))
+    let node2 = Node(address: .init(endpoint: .init(host: "host", port: 2), nid: .random()))
+    let node3 = Node(address: .init(endpoint: .init(host: "host", port: 3), nid: .random()))
+    let node4 = Node(address: .init(endpoint: .init(host: "host", port: 4), nid: .random()))
+    let node5 = Node(address: .init(endpoint: .init(host: "host", port: 5), nid: .random()))
+
+    hashRing.addNode(node1)
+    hashRing.addNode(node2)
+    hashRing.addNode(node3)
+    hashRing.addNode(node4)
+    hashRing.addNode(node5)
+
+    let keys = (1...200).map { "key\($0)" }
+    var initialMapping: [String: Node] = [:]
+    for key in keys {
+      if let node = hashRing.getNode(for: key) {
+        initialMapping[key] = node
+      }
+    }
+
+    hashRing.removeNode(node2)
+    hashRing.removeNode(node4)
+    hashRing.removeNode(node5)
+    hashRing.addNode(node5)
+    hashRing.addNode(node2)
+    hashRing.addNode(node4)
+
+    for key in keys {
+      #expect(
+        hashRing.getNode(for: key) == initialMapping[key],
+        "Key mapping should be restored after re-adding the same node."
+      )
+    }
   }
 }

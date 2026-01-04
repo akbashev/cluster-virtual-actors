@@ -36,8 +36,8 @@ let package = Package(
       from: "1.0.0"
     ),
     .package(
-      url: "https://github.com/apple/swift-crypto.git",
-      from: "3.12.0"
+      url: "https://github.com/daisuke-t-jp/MurmurHash-Swift.git",
+      from: "1.1.0"
     ),
   ],
   targets: [
@@ -50,8 +50,14 @@ let package = Package(
           name: "DistributedCluster",
           package: "swift-distributed-actors"
         ),
-        .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
-        .product(name: "_CryptoExtras", package: "swift-crypto"),
+        .product(
+          name: "AsyncAlgorithms",
+          package: "swift-async-algorithms"
+        ),
+        .product(
+          name: "MurmurHash-Swift",
+          package: "MurmurHash-Swift"
+        ),
       ]
     ),
     .testTarget(
