@@ -12,6 +12,7 @@ struct SingleFlightTests {
 
     init(actorSystem: ClusterSystem) async throws {
       self.actorSystem = actorSystem
+      // Random timeout
       let delays = Int.random(in: 500...1000)
       try await Task.sleep(for: .milliseconds(delays))
     }
@@ -28,18 +29,20 @@ struct SingleFlightTests {
 
   @Test
   func testGetActorSingleFlight() async throws {
-    let system = await ClusterSystem("single-flight")
-    let node = await VirtualNode(actorSystem: system)
-    try await Task.sleep(for: .seconds(1))
-    let router = await VirtualNodeRouter(
-      actorSystem: system,
-      replicationFactor: 10,
-      idleTimeoutSettings: .init(
-        isEnabled: false,
-        cleaningInterval: .seconds(60),
-        timeout: .seconds(600)
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "single-flight") {
+      $0.bindPort = 2650
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(
+        plugin: ClusterVirtualActorsPlugin(
+          replicationFactor: 10
+        )
       )
-    )
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
 
     let id = VirtualActorID(rawValue: "single-flight-actor")
 
@@ -49,7 +52,7 @@ struct SingleFlightTests {
     ) { group in
       for _ in 0..<20 {
         group.addTask {
-          let actor: SingleFlightActor = try await router.getActor(
+          let actor: SingleFlightActor = try await system.virtualActors.getActor(
             identifiedBy: id,
             dependency: SingleFlightActor.None()
           )

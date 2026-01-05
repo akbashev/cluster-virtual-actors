@@ -10,3 +10,9 @@ public protocol VirtualActor: DistributedActor, Codable where ActorSystem == Clu
 public enum VirtualActorError: Error, Codable, Sendable {
   case spawnDependencyTypeMismatch
 }
+
+extension VirtualActor {
+  nonisolated func resign() async throws {
+    try await self.actorSystem.virtualActors.cleanActor(self)
+  }
+}

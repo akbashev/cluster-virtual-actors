@@ -6,29 +6,21 @@ distributed public actor VirtualNode: Routable {
 
   nonisolated var address: Cluster.Node { self.actorSystem.cluster.node }
 
-  private var virtualActors: [VirtualActorID: Reference] = [:]
+  private var storage: ActorStorage = ActorStorage()
 
   distributed public func findActor<A: VirtualActor>(identifiedBy id: VirtualActorID) throws -> A {
-    guard let reference = self.virtualActors[id] else { throw VirtualNodeError.actorIsMissing }
-    guard let actor = reference.actor as? A else { throw VirtualNodeError.typeMismatch }
-    self.virtualActors[id]?.lastUpdated = .now
+    guard let actor = self.storage.getActor(identifiedBy: id) else { throw VirtualNodeError.actorIsMissing }
+    guard let actor = actor as? A else { throw VirtualNodeError.typeMismatch }
     return actor
   }
 
-  // TODO: Check for reentrancy issues and probably add queueing
   distributed func spawnActor<A: VirtualActor, D: Sendable & Codable>(
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A {
     let actor = try await A.spawn(on: self.actorSystem, dependency: dependency)
-    actor.metadata[keyPath: \.virtualId] = id
-    self.virtualActors[id] = .init(actor: actor)
+    self.storage.insertActor(actor, identifiedBy: id)
     return actor
-  }
-
-  distributed func markActorAsActive(identifiedBy id: VirtualActorID) {
-    self.virtualActors[id]?.lastUpdated = .now
-    self.actorSystem.log.debug("Marking actor \(id) as active")
   }
 
   distributed func updateTimeoutSettings(_ settings: IdleTimeoutSettings) {
@@ -38,6 +30,14 @@ distributed public actor VirtualNode: Routable {
       self.cleaningTask?.cancel()
       self.cleaningTask = nil
     }
+  }
+
+  distributed func removeActor(identifiedBy id: VirtualActorID) {
+    self.storage.removeActor(identifiedBy: id)
+  }
+
+  public distributed func run() async throws {
+    try await self.actorSystem.terminated
   }
 
   public init(
@@ -66,22 +66,19 @@ distributed public actor VirtualNode: Routable {
 
   private func checkTimedOutActors(idleTimeoutSettings: IdleTimeoutSettings) {
     var idsToRemove: [VirtualActorID] = []
-    for (id, reference) in self.virtualActors where (ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout) {
+    for (id, reference) in self.storage.virtualActors where (ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout) {
       idsToRemove.append(id)
     }
     guard !idsToRemove.isEmpty else { return }
     self.actorSystem.log.info("Found inactive actor \(idsToRemove), cleaning...")
     for id in idsToRemove {
-      self.virtualActors.removeValue(forKey: id)
+      self.removeActor(identifiedBy: id)
     }
-  }
-
-  public distributed func run() async throws {
-    try await self.actorSystem.terminated
   }
 
   deinit {
     self.cleaningTask?.cancel()
+    self.cleaningTask = nil
   }
 }
 
@@ -95,19 +92,14 @@ extension VirtualNode {
 }
 
 extension VirtualNode {
-  fileprivate class Reference {
-    let actor: any VirtualActor
-    var lastUpdated: ContinuousClock.Instant
-
-    init(actor: any VirtualActor, lastUpdated: ContinuousClock.Instant = .now) {
-      self.actor = actor
-      self.lastUpdated = lastUpdated
-    }
-  }
-}
-
-extension VirtualNode {
   public struct IdleTimeoutSettings: Sendable, Codable {
+
+    public static let `default` = IdleTimeoutSettings(
+      isEnabled: false,
+      cleaningInterval: .seconds(60),
+      timeout: .seconds(10 * 60)
+    )
+
     let isEnabled: Bool
     let cleaningInterval: ContinuousClock.Duration
     let timeout: ContinuousClock.Duration
@@ -124,6 +116,30 @@ extension VirtualNode {
   }
 }
 
-extension ActorMetadataKeys {
-  var virtualId: Key<VirtualActorID> { "$virtual-actor-id" }
+private struct ActorStorage {
+  fileprivate class Reference {
+    let actor: any VirtualActor
+    var lastUpdated: ContinuousClock.Instant
+
+    init(actor: any VirtualActor, lastUpdated: ContinuousClock.Instant = .now) {
+      self.actor = actor
+      self.lastUpdated = lastUpdated
+    }
+  }
+
+  private(set) var virtualActors: [VirtualActorID: Reference] = [:]
+
+  func getActor(identifiedBy id: VirtualActorID) -> (any VirtualActor)? {
+    guard let reference = self.virtualActors[id] else { return nil }
+    defer { reference.lastUpdated = .now }
+    return reference.actor
+  }
+
+  mutating func insertActor(_ actor: any VirtualActor, identifiedBy id: VirtualActorID) {
+    self.virtualActors[id] = .init(actor: actor)
+  }
+
+  mutating func removeActor(identifiedBy id: VirtualActorID) {
+    self.virtualActors.removeValue(forKey: id)
+  }
 }

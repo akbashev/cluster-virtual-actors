@@ -9,9 +9,15 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     case noActorsAvailable
   }
 
+  // Hash ring of nodes. `Virtual` here is part of `VirtualActor` term.
   private var virtualNodes: HashRing<VirtualNode>
-  private var actorIdToVirtualId: [ClusterSystem.ActorID: VirtualActorID] = [:]
-  private var inFlight: [VirtualActorID: Task<any VirtualActor, Swift.Error>] = [:]
+  // When cleaning up we need to associate actor id with virtual id
+  private var idMapping: [ClusterSystem.ActorID: VirtualActorID] = [:]
+  // In flight tasks for finding/spawning
+  private var inFlightSpawning: [VirtualActorID: Task<any VirtualActor, Swift.Error>] = [:]
+  // In flight tasks for cleaning
+  private var inFlightCleaning: [ClusterSystem.ActorID: Task<Void, any Swift.Error>] = [:]
+  // Receptionist listining task
   private var listeningTask: Task<Void, Never>?
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
@@ -48,22 +54,35 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A {
-    defer { self.inFlight[id] = nil }
     guard let node = self.virtualNodes.getNode(for: id.rawValue) else { throw Error.noNodesAvailable }
 
-    if let task = self.inFlight[id] {
-      let actor = try await task.value
-      guard let typed = actor as? A else { throw VirtualNodeError.typeMismatch }
-      return typed
-    }
+    let task = self.getTaskForActor(
+      actorType: A.self,
+      identifiedBy: id,
+      on: node,
+      dependency: dependency
+    )
+
+    let actor = try await task.value
+    self.idMapping[actor.id] = id
+    guard let typed = actor as? A else { throw VirtualNodeError.typeMismatch }
+    return typed
+  }
+
+  private func getTaskForActor<A: VirtualActor, D: Sendable & Codable>(
+    actorType: A.Type,
+    identifiedBy id: VirtualActorID,
+    on node: VirtualNode,
+    dependency: D
+  ) -> Task<any VirtualActor, Swift.Error> {
+    if let task = self.inFlightSpawning[id] { return task }
     let task = Task<any VirtualActor, Swift.Error> {
+      defer { self.inFlightSpawning[id] = nil }
+
       do {
         /// Try to get an actor by id
         self.actorSystem.log.info("Getting actor \(id) from \(node.id)")
         let actor: A = try await node.findActor(identifiedBy: id)
-        if self.idleTimeoutSettings.isEnabled {
-          self.actorIdToVirtualId[actor.id] = id
-        }
         return actor
       } catch {
         switch error {
@@ -75,32 +94,36 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
             identifiedBy: id,
             dependency: dependency
           )
-          if self.idleTimeoutSettings.isEnabled {
-            self.actorIdToVirtualId[actor.id] = id
-          }
           return actor
         default:
           throw error
         }
       }
     }
-    self.inFlight[id] = task
-    let actor = try await task.value
-    guard let typed = actor as? A else { throw VirtualNodeError.typeMismatch }
-    return typed
+    self.inFlightSpawning[id] = task
+    return task
   }
 
-  distributed func markAsActive<A: VirtualActor>(actor: A) async {
-    guard
-      self.idleTimeoutSettings.isEnabled,
-      let virtualId = self.actorIdToVirtualId[actor.id]
-    else { return }
-    try? await self.virtualNodes.getNode(for: virtualId.rawValue)?.markActorAsActive(identifiedBy: virtualId)
-  }
+  distributed func cleanActor(identifiedBy id: ClusterSystem.ActorID) async throws {
+    guard let virtualId = self.idMapping[id] else { return }
 
-  distributed func cleanActor(identifiedBy id: ClusterSystem.ActorID) {
-    guard self.idleTimeoutSettings.isEnabled else { return }
-    self.actorIdToVirtualId.removeValue(forKey: id)
+    if let task = self.inFlightCleaning[id] {
+      return try await task.value
+    }
+    let task = Task<Void, any Swift.Error> {
+      defer {
+        self.inFlightCleaning[id] = nil
+      }
+      self.actorSystem.log.debug("Marking \(id) as inactive, virtualId: \(virtualId)")
+      try await self.virtualNodes
+        .getNode(for: virtualId.rawValue)?
+        .removeActor(identifiedBy: virtualId)
+
+      // FIXME: What if distributed removeActor fails?
+      self.idMapping[id] = nil
+    }
+    self.inFlightCleaning[id] = task
+    return try await task.value
   }
 
   init(
