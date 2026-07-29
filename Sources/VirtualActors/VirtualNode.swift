@@ -70,7 +70,7 @@ distributed public actor VirtualNode: Routable {
       idsToRemove.append(id)
     }
     guard !idsToRemove.isEmpty else { return }
-    self.actorSystem.log.info("Found inactive actor \(idsToRemove), cleaning...")
+    self.actorSystem.log.debug("Found inactive actor \(idsToRemove), cleaning...")
     for id in idsToRemove {
       self.removeActor(identifiedBy: id)
     }

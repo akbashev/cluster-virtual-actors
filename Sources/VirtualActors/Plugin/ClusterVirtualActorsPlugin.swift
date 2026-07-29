@@ -71,9 +71,15 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
 
   nonisolated public func onResignID(_ id: ClusterSystem.ActorID) {
     Task { [weak self] in
-      guard await self?.router != nil else { return }
-      try await self?.cleanActor(identifiedBy: id)
+      await self?.cleanAfterResign(id)
     }
+  }
+
+  /// Runs isolated on the plugin actor so `stop()` cannot nil `router`
+  /// between the check and the use (shutdown race).
+  private func cleanAfterResign(_ id: ClusterSystem.ActorID) async {
+    guard let router = self.router else { return }
+    try? await router.cleanActor(identifiedBy: id)
   }
 }
 

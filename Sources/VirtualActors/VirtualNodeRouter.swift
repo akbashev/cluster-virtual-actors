@@ -29,7 +29,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
 
   private func findVirtualNodes() {
     guard self.listeningTask == nil else {
-      self.actorSystem.log.info("Already looking for nodes")
+      self.actorSystem.log.debug("Already looking for nodes")
       return
     }
 
@@ -81,7 +81,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
 
       do {
         /// Try to get an actor by id
-        self.actorSystem.log.info("Getting actor \(id) from \(node.id)")
+        self.actorSystem.log.debug("Getting actor \(id) from \(node.id)")
         let actor: A = try await node.findActor(identifiedBy: id)
         return actor
       } catch {
@@ -89,7 +89,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
         /// If there are no actors available—let's try to build it
         case VirtualNodeError.actorIsMissing:
           /// Register actor on this node (for future lookups)
-          self.actorSystem.log.info("Registered actor \(id) on \(node.id)")
+          self.actorSystem.log.debug("Registered actor \(id) on \(node.id)")
           let actor: A = try await node.spawnActor(
             identifiedBy: id,
             dependency: dependency
