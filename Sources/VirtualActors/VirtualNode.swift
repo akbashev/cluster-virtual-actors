@@ -65,14 +65,25 @@ distributed public actor VirtualNode: Routable {
   }
 
   private func checkTimedOutActors(idleTimeoutSettings: IdleTimeoutSettings) {
-    var idsToRemove: [VirtualActorID] = []
-    for (id, reference) in self.storage.virtualActors where (ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout) {
-      idsToRemove.append(id)
+    var idsToSweep: [VirtualActorID] = []
+    var staleEntries: [VirtualActorID] = []
+    for (id, reference) in self.storage.virtualActors {
+      if reference.actor == nil {
+        // The weak hold expired — the actor was freed. Prune the stale entry.
+        staleEntries.append(id)
+      } else if reference.isWarm,
+        ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout
+      {
+        idsToSweep.append(id)
+      }
     }
-    guard !idsToRemove.isEmpty else { return }
-    self.actorSystem.log.debug("Found inactive actor \(idsToRemove), cleaning...")
-    for id in idsToRemove {
+    for id in staleEntries {
       self.removeActor(identifiedBy: id)
+    }
+    guard !idsToSweep.isEmpty else { return }
+    self.actorSystem.log.debug("Found inactive actor \(idsToSweep), sweeping to weak holds...")
+    for id in idsToSweep {
+      self.storage.downgradeActor(identifiedBy: id)
     }
   }
 
@@ -117,13 +128,39 @@ extension VirtualNode {
 }
 
 private struct ActorStorage {
-  fileprivate class Reference {
-    let actor: any VirtualActor
+  /// A storage entry for one actor. Entries start *warm*: the registry
+  /// holds the actor strongly, keeping it alive between resolutions. The
+  /// idle sweep downgrades an entry to a weak hold — from then on the actor
+  /// survives only on references held elsewhere (ARC frees it when there
+  /// are none), and a later lookup *revives* the entry instead of spawning
+  /// a duplicate instance of the same `VirtualActorID`.
+  fileprivate final class Reference {
+    private var strongActor: (any VirtualActor)?
+    private weak var weakActor: (any VirtualActor)?
     var lastUpdated: ContinuousClock.Instant
 
+    /// The actor while it lives anywhere — registry hold or not.
+    var actor: (any VirtualActor)? { self.strongActor ?? self.weakActor }
+    /// Whether the registry itself still keeps the actor alive.
+    var isWarm: Bool { self.strongActor != nil }
+
     init(actor: any VirtualActor, lastUpdated: ContinuousClock.Instant = .now) {
-      self.actor = actor
+      self.strongActor = actor
       self.lastUpdated = lastUpdated
+    }
+
+    /// The idle sweep: drop the registry's own hold. The actor stays
+    /// reachable through the weak hold (for revival) until ARC frees it.
+    func downgrade() {
+      self.weakActor = self.strongActor
+      self.strongActor = nil
+    }
+
+    /// A lookup on a swept entry: the registry warms the actor again.
+    func revive() {
+      if self.strongActor == nil {
+        self.strongActor = self.weakActor
+      }
     }
   }
 
@@ -131,12 +168,24 @@ private struct ActorStorage {
 
   func getActor(identifiedBy id: VirtualActorID) -> (any VirtualActor)? {
     guard let reference = self.virtualActors[id] else { return nil }
+    // A swept entry whose weak hold expired is treated as missing: the
+    // caller respawns a fresh instance (and overwrites the stale entry).
+    guard let actor = reference.actor else { return nil }
     defer { reference.lastUpdated = .now }
-    return reference.actor
+    reference.revive()
+    return actor
   }
 
   mutating func insertActor(_ actor: any VirtualActor, identifiedBy id: VirtualActorID) {
     self.virtualActors[id] = .init(actor: actor)
+  }
+
+  /// The sweep operation: the registry drops its own hold on the actor
+  /// (see ``Reference/downgrade``). The actor is NOT removed from storage —
+  /// a weak hold remains so a later lookup revives the same instance
+  /// instead of duplicating it.
+  mutating func downgradeActor(identifiedBy id: VirtualActorID) {
+    self.virtualActors[id]?.downgrade()
   }
 
   mutating func removeActor(identifiedBy id: VirtualActorID) {
