@@ -59,13 +59,13 @@ distributed public actor VirtualNode: Routable {
     self.cleaningTask = Task {
       for await _ in sequence {
         guard !Task.isCancelled else { return }
-        self.checkTimedOutActors(idleTimeoutSettings: idleTimeoutSettings)
+        await self.checkTimedOutActors(idleTimeoutSettings: idleTimeoutSettings)
       }
     }
   }
 
-  private func checkTimedOutActors(idleTimeoutSettings: IdleTimeoutSettings) {
-    var idsToSweep: [VirtualActorID] = []
+  private func checkTimedOutActors(idleTimeoutSettings: IdleTimeoutSettings) async {
+    var idsToAsk: [VirtualActorID] = []
     var staleEntries: [VirtualActorID] = []
     for (id, reference) in self.storage.virtualActors {
       if reference.actor == nil {
@@ -74,15 +74,37 @@ distributed public actor VirtualNode: Routable {
       } else if reference.isWarm,
         ContinuousClock.now - reference.lastUpdated >= idleTimeoutSettings.timeout
       {
-        idsToSweep.append(id)
+        idsToAsk.append(id)
       }
     }
     for id in staleEntries {
       self.removeActor(identifiedBy: id)
     }
-    guard !idsToSweep.isEmpty else { return }
-    self.actorSystem.log.debug("Found inactive actor \(idsToSweep), sweeping to weak holds...")
-    for id in idsToSweep {
+    guard !idsToAsk.isEmpty else { return }
+    self.actorSystem.log.debug("Found inactive actor \(idsToAsk), asking to deactivate...")
+    // Serial on purpose: the cleaning task is the only asker and it awaits
+    // each answer, so an entry can never have two questions in flight.
+    for id in idsToAsk {
+      await self.askToDeactivate(identifiedBy: id)
+    }
+  }
+
+  /// The idle sweep: ask the actor whether it is ready to be deactivated. The
+  /// question executes *on the actor* (`whenLocal` hops onto its executor),
+  /// serialized with its synchronous execution — it may still interleave with
+  /// a *suspending* async turn, so refusal rests on the actor's domain state
+  /// (see ``VirtualActor/shouldDeactivate()``). An affirmative answer
+  /// downgrades the registry's hold (the actor's own cleanup already ran
+  /// inside the question); a negative one bumps the idle clock.
+  private func askToDeactivate(identifiedBy id: VirtualActorID) async {
+    guard let reference = self.storage.virtualActors[id], let actor = reference.actor else { return }
+    let askedAt = reference.lastUpdated
+    let answer = await actor.whenLocal { await $0.shouldDeactivate() } ?? true
+    if !answer {
+      reference.lastUpdated = .now
+    } else if reference.lastUpdated == askedAt {
+      // Downgrade only if nothing touched the entry while the question was
+      // being answered — a lookup in between already counts as activity.
       self.storage.downgradeActor(identifiedBy: id)
     }
   }
@@ -130,10 +152,12 @@ extension VirtualNode {
 private struct ActorStorage {
   /// A storage entry for one actor. Entries start *warm*: the registry
   /// holds the actor strongly, keeping it alive between resolutions. The
-  /// idle sweep downgrades an entry to a weak hold — from then on the actor
-  /// survives only on references held elsewhere (ARC frees it when there
-  /// are none), and a later lookup *revives* the entry instead of spawning
-  /// a duplicate instance of the same `VirtualActorID`.
+  /// idle sweep first asks the actor whether it should deactivate
+  /// (``VirtualActor/shouldDeactivate()``); only on an affirmative answer
+  /// does the sweep downgrade the entry to a weak hold — from then on the
+  /// actor survives only on references held elsewhere (ARC frees it when
+  /// there are none), and a later lookup *revives* the entry instead of
+  /// spawning a duplicate instance of the same `VirtualActorID`.
   fileprivate final class Reference {
     private var strongActor: (any VirtualActor)?
     private weak var weakActor: (any VirtualActor)?
@@ -149,8 +173,9 @@ private struct ActorStorage {
       self.lastUpdated = lastUpdated
     }
 
-    /// The idle sweep: drop the registry's own hold. The actor stays
-    /// reachable through the weak hold (for revival) until ARC frees it.
+    /// The idle sweep, after the actor agreed to deactivate: drop the
+    /// registry's own hold. The actor stays reachable through the weak hold
+    /// (for revival) until ARC frees it.
     func downgrade() {
       self.weakActor = self.strongActor
       self.strongActor = nil
@@ -180,8 +205,9 @@ private struct ActorStorage {
     self.virtualActors[id] = .init(actor: actor)
   }
 
-  /// The sweep operation: the registry drops its own hold on the actor
-  /// (see ``Reference/downgrade``). The actor is NOT removed from storage —
+  /// The sweep operation, performed after the actor agreed to deactivate:
+  /// the registry drops its own hold on the actor (see
+  /// ``Reference/downgrade``). The actor is NOT removed from storage —
   /// a weak hold remains so a later lookup revives the same instance
   /// instead of duplicating it.
   mutating func downgradeActor(identifiedBy id: VirtualActorID) {

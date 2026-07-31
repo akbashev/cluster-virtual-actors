@@ -1,5 +1,6 @@
 import Distributed
 import DistributedCluster
+import Foundation
 import Testing
 
 @testable import VirtualActors
@@ -7,24 +8,161 @@ import Testing
 @Suite(.timeLimit(.minutes(1)))
 struct IdleTimeoutTests {
 
-  distributed actor TestActor: VirtualActor {
+  @VirtualActor
+  distributed actor TestActor {
     typealias ActorSystem = ClusterSystem
 
+    /// Proves an instance is alive and answering.
+    distributed func ping() -> Bool { true }
+  }
+
+  /// Mirrors `Agent`: checks into the receptionist on activation and exposes
+  /// an `AsyncSequence` of activity fragments, with subscribers parking in
+  /// `getNext` until a fragment or a cancellation arrives.
+  @VirtualActor
+  distributed actor TestSequenceActor: AsyncSequence {
+    typealias ActorSystem = ClusterSystem
+    typealias Element = String
+
     struct None: Codable, Sendable {}
+
+    static var receptionKey: DistributedReception.Key<TestSequenceActor> { "test-sequence-actor" }
+
+    private var activityWaiters: [UUID: CheckedContinuation<String?, Never>] = [:]
+
+    init(actorSystem: ClusterSystem) async {
+      self.actorSystem = actorSystem
+      await actorSystem.receptionist.checkIn(self, with: Self.receptionKey)
+    }
+
+    /// Parks the subscriber until a fragment is published or the subscription
+    /// is cancelled; mirrors `Agent.getNext(_:)`.
+    distributed func getNext(_ subscriber: UUID) async -> String? {
+      await withCheckedContinuation { self.activityWaiters[subscriber] = $0 }
+    }
+
+    /// Ends one subscription, resuming its parked pull with `nil`.
+    distributed func cancel(_ subscriber: UUID) {
+      guard let waiter = activityWaiters.removeValue(forKey: subscriber) else { return }
+      waiter.resume(returning: nil)
+    }
+
+    /// Ends every parked pull at once — the agent-side release.
+    distributed func endActivity() {
+      let waiters = self.activityWaiters
+      self.activityWaiters.removeAll()
+      for waiter in waiters.values { waiter.resume(returning: nil) }
+    }
+
+    nonisolated func makeAsyncIterator() -> Iterator {
+      Iterator(ref: self)
+    }
+
+    final class Iterator: AsyncIteratorProtocol {
+      private let ref: TestSequenceActor
+      private let uuid: UUID = UUID()
+
+      init(ref: TestSequenceActor) {
+        self.ref = ref
+      }
+
+      func next() async -> String? {
+        try? await ref.getNext(uuid)
+      }
+
+      deinit {
+        let ref = ref
+        let uuid = uuid
+        Task.detached { try? await ref.cancel(uuid) }
+      }
+    }
+  }
+
+  /// Records the termination of a watched actor.
+  distributed actor TestWatcher: LifecycleWatch {
+    typealias ActorSystem = ClusterSystem
+
+    private var waiter: CheckedContinuation<ActorID, Never>?
 
     init(actorSystem: ClusterSystem) {
       self.actorSystem = actorSystem
     }
 
-    static func spawn(
-      on actorSystem: ClusterSystem,
-      dependency: any Sendable & Codable
-    ) async throws -> TestActor {
-      TestActor(actorSystem: actorSystem)
+    distributed func watch(_ actor: TestSequenceActor) {
+      self.watchTermination(of: actor)
     }
 
-    /// Proves an instance is alive and answering.
-    distributed func ping() -> Bool { true }
+    /// Parks until the watched actor's termination is delivered.
+    distributed func nextTermination() async -> ActorID {
+      await withCheckedContinuation { self.waiter = $0 }
+    }
+
+    func terminated(actor id: ActorID) async {
+      self.waiter?.resume(returning: id)
+      self.waiter = nil
+    }
+  }
+
+  /// An actor with an opinion about deactivation: it refuses the poison pill
+  /// while `busy`. Note a pill CAN execute in the middle of a *suspending*
+  /// async turn (actor reentrancy) — correctness therefore rests on the
+  /// actor checking its own domain state, which is what `busy` models.
+  @VirtualActor
+  distributed actor TestPickyActor {
+    typealias ActorSystem = ClusterSystem
+
+    private var busy = false
+    private var workFinished = false
+    private var pillsOffered = 0
+    private var pillRefusedWhileBusy = false
+
+    func shouldDeactivate() async -> Bool {
+      self.pillsOffered += 1
+      if self.busy {
+        self.pillRefusedWhileBusy = true
+        return false
+      }
+      return true
+    }
+
+    distributed func setBusy(_ busy: Bool) {
+      self.busy = busy
+    }
+
+    /// A turn longer than the idle timeout. The actor marks itself busy for
+    /// the duration — the domain signal its pill decision rests on. The turn
+    /// suspends on the sleep, so a pill offered mid-turn executes during the
+    /// suspension and must refuse.
+    distributed func longWork(milliseconds: Int) async {
+      self.busy = true
+      try? await Task.sleep(for: .milliseconds(milliseconds))
+      self.busy = false
+      self.workFinished = true
+    }
+
+    distributed func didFinishWork() -> Bool { self.workFinished }
+    distributed func pillsOfferedCount() -> Int { self.pillsOffered }
+    distributed func didRefusePillWhileBusy() -> Bool { self.pillRefusedWhileBusy }
+  }
+
+  /// Proves the macro's dependency path: the generated `spawn` casts the
+  /// existential dependency and forwards it to `init(actorSystem:dependency:)`.
+  @VirtualActor
+  distributed actor TestConfiguredActor {
+    typealias ActorSystem = ClusterSystem
+
+    struct Dependency: Codable, Sendable {
+      let greeting: String
+    }
+
+    private let greeting: String
+
+    init(actorSystem: ClusterSystem, dependency: Dependency) {
+      self.actorSystem = actorSystem
+      self.greeting = dependency.greeting
+    }
+
+    distributed func greet() -> String { self.greeting }
   }
 
   @Test
@@ -384,6 +522,268 @@ struct IdleTimeoutTests {
 
     _ = ownerSystem
     _ = ownerNode
+  }
+
+  /// Mirrors the real configuration: a `VirtualActor` checked into the
+  /// receptionist whose activity sequence is consumed by an open-ended
+  /// observer loop (`AgentObserver.watch`). The parked `getNext` pull pins
+  /// the actor through the sweep — and cancelling the observer task cannot
+  /// release it. Only the agent ending the stream frees the instance, and
+  /// the deinit then propagates `terminated` to lifecycle watchers.
+  @Test
+  func testSequenceObserverPinsSweptActorUntilAgentEndsStream() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "idle-timeout-sequence") {
+      $0.bindPort = 2557
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(
+        plugin: ClusterVirtualActorsPlugin(
+          replicationFactor: 10,
+          idleTimeoutSettings: .init(
+            isEnabled: true,
+            cleaningInterval: .milliseconds(200),
+            timeout: .milliseconds(500)
+          )
+        )
+      )
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let watcher = TestWatcher(actorSystem: system)
+    let terminationTask = Task { try await watcher.nextTermination() }
+
+    let id = VirtualActorID(rawValue: "idle-timeout-sequence")
+    weak var weakActor: TestSequenceActor?
+    let originalID: ClusterSystem.ActorID
+    do {
+      let actor: TestSequenceActor = try await getActorEventually(
+        on: system,
+        identifiedBy: id,
+        dependency: TestSequenceActor.None()
+      )
+      weakActor = actor
+      originalID = actor.id
+      try await watcher.watch(actor)
+    }
+
+    // The observer: resolve the guest from the receptionist and consume its
+    // activity sequence — an open-ended loop parked inside `getNext`. The
+    // lookup and loop live inside the task so no strong reference survives
+    // in this test's scope after the loop exits.
+    let observerTask = Task { () -> Void in
+      let guests = await system.receptionist.lookup(TestSequenceActor.receptionKey)
+      guard let guest = guests.first else {
+        Issue.record("receptionist lookup returned no guests")
+        return
+      }
+      for await _ in guest {}
+    }
+
+    // The sweep fires and downgrades the registry's hold, but the instance
+    // cannot be freed: the observer's parked pull pins it.
+    try await Task.sleep(for: .milliseconds(1500))
+    #expect(weakActor != nil)
+
+    // Cancelling the observer task does NOT release the actor either: the
+    // loop is parked inside the `getNext` RPC and task cancellation cannot
+    // unpark it.
+    observerTask.cancel()
+    try await Task.sleep(for: .milliseconds(300))
+    #expect(weakActor != nil)
+
+    // The release must come from the agent side: ending the parked pulls
+    // lets the observer loop exit and drop the last reference.
+    do {
+      let actor: TestSequenceActor = try await node.findActor(identifiedBy: id)
+      try await actor.endActivity()
+    }
+    _ = await observerTask.value
+
+    // After another idle period the sweep downgrades again and, with no
+    // references left, the instance is freed — the receptionist check-in
+    // itself never pinned it.
+    try await Task.sleep(for: .milliseconds(1500))
+    #expect(weakActor == nil)
+
+    // And the deinit propagated `terminated` to the lifecycle watcher.
+    #expect(try await terminationTask.value == originalID)
+
+    _ = system
+    _ = node
+  }
+
+  /// A busy actor refuses the pill: the entry stays warm and the instance
+  /// alive across many sweeps. Once it stops being busy the next pill is
+  /// swallowed and the instance is freed.
+  @Test
+  func testRefusedPillKeepsActorWarmUntilSwallowed() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "idle-timeout-pill-refuse") {
+      $0.bindPort = 2565
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(
+        plugin: ClusterVirtualActorsPlugin(
+          replicationFactor: 10,
+          idleTimeoutSettings: .init(
+            isEnabled: true,
+            cleaningInterval: .milliseconds(200),
+            timeout: .milliseconds(500)
+          )
+        )
+      )
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let id = VirtualActorID(rawValue: "idle-timeout-pill-refuse")
+    weak var weakActor: TestPickyActor?
+    do {
+      let actor: TestPickyActor = try await getActorEventually(
+        on: system,
+        identifiedBy: id,
+        dependency: TestPickyActor.None()
+      )
+      weakActor = actor
+      try await actor.setBusy(true)
+    }
+
+    // Several timeouts pass; the pill is offered but refused, so the
+    // registry's strong hold is kept and the actor survives.
+    try await Task.sleep(for: .milliseconds(1500))
+    #expect(weakActor != nil)
+
+    do {
+      let actor: TestPickyActor = try await node.findActor(identifiedBy: id)
+      #expect(try await actor.pillsOfferedCount() >= 1)
+      try await actor.setBusy(false)
+    }
+
+    // No longer busy: the next pill is swallowed, the hold downgrades, and
+    // the instance is freed.
+    try await Task.sleep(for: .milliseconds(1500))
+    #expect(weakActor == nil)
+
+    _ = system
+    _ = node
+  }
+
+  /// A turn longer than the idle timeout: the pill offered mid-turn executes
+  /// during the turn's suspension (actor reentrancy) but is refused on the
+  /// actor's own domain state (`busy`). Only after the work completes is a
+  /// pill swallowed and the instance released.
+  @Test
+  func testPillDuringLongTurnIsRefusedUntilWorkCompletes() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "idle-timeout-pill-turn") {
+      $0.bindPort = 2566
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(
+        plugin: ClusterVirtualActorsPlugin(
+          replicationFactor: 10,
+          idleTimeoutSettings: .init(
+            isEnabled: true,
+            cleaningInterval: .milliseconds(200),
+            timeout: .milliseconds(500)
+          )
+        )
+      )
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let id = VirtualActorID(rawValue: "idle-timeout-pill-turn")
+    weak var weakActor: TestPickyActor?
+    do {
+      let actor: TestPickyActor = try await getActorEventually(
+        on: system,
+        identifiedBy: id,
+        dependency: TestPickyActor.None()
+      )
+      weakActor = actor
+
+      // A 1200ms turn — more than twice the 500ms idle timeout.
+      let workTask = Task { try? await actor.longWork(milliseconds: 1200) }
+
+      // Mid-turn, past the first timeout: the actor survives because its
+      // pill refusals keep the registry's hold warm.
+      try await Task.sleep(for: .milliseconds(700))
+      #expect(weakActor != nil)
+
+      _ = await workTask.value
+      try await Task.sleep(for: .milliseconds(500))
+
+      // At least one pill ran *during* the turn's suspension and was refused
+      // on domain state; no pill interrupted the work itself.
+      #expect(try await actor.didFinishWork() == true)
+      #expect(try await actor.pillsOfferedCount() >= 1)
+      #expect(try await actor.didRefusePillWhileBusy() == true)
+    }
+
+    // With the work done the next pill was swallowed and the registry
+    // downgraded; with the last reference dropped, the instance is freed.
+    try await Task.sleep(for: .milliseconds(1200))
+    #expect(weakActor == nil)
+
+    _ = system
+    _ = node
+  }
+
+  /// The macro-generated `spawn` casts the existential dependency and
+  /// forwards it to the actor's initializer.
+  @Test
+  func testSpawnMacroForwardsDependency() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "spawn-macro-dependency") {
+      $0.bindPort = 2567
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(plugin: ClusterVirtualActorsPlugin(replicationFactor: 10))
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let actor: TestConfiguredActor = try await getActorEventually(
+      on: system,
+      identifiedBy: VirtualActorID(rawValue: "spawn-macro-dependency"),
+      dependency: TestConfiguredActor.Dependency(greeting: "hello")
+    )
+    #expect(try await actor.greet() == "hello")
+
+    _ = node
+  }
+
+  /// A dependency of the wrong type fails the macro-generated cast —
+  /// `VirtualActorError.spawnDependencyTypeMismatch` comes back to the caller.
+  @Test
+  func testSpawnMacroRejectsMismatchedDependency() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "spawn-macro-mismatch") {
+      $0.bindPort = 2568
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(plugin: ClusterVirtualActorsPlugin(replicationFactor: 10))
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    await #expect(throws: VirtualActorError.spawnDependencyTypeMismatch) {
+      let _: TestConfiguredActor = try await getActorEventually(
+        on: system,
+        identifiedBy: VirtualActorID(rawValue: "spawn-macro-mismatch"),
+        dependency: TestActor.None()
+      )
+    }
+
+    _ = node
   }
 
   /// The router singleton discovers the local `VirtualNode` asynchronously

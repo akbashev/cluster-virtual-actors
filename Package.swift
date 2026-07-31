@@ -1,6 +1,7 @@
 // swift-tools-version: 6.2
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
+import CompilerPluginSupport
 import PackageDescription
 
 let platforms: [SupportedPlatform]?
@@ -39,13 +40,25 @@ let package = Package(
       url: "https://github.com/daisuke-t-jp/MurmurHash-Swift.git",
       from: "1.1.0"
     ),
+    .package(
+      url: "https://github.com/swiftlang/swift-syntax.git",
+      "509.0.0"..<"605.0.0"
+    ),
   ],
   targets: [
     // Targets are the basic building blocks of a package, defining a module or a test suite.
     // Targets can depend on other targets in this package and products from dependencies.
+    .macro(
+      name: "VirtualActorsMacros",
+      dependencies: [
+        .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+        .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+      ]
+    ),
     .target(
       name: "VirtualActors",
       dependencies: [
+        "VirtualActorsMacros",
         .product(
           name: "DistributedCluster",
           package: "swift-distributed-actors"
@@ -64,6 +77,13 @@ let package = Package(
       name: "VirtualActorsTests",
       dependencies: [
         "VirtualActors"
+      ]
+    ),
+    .testTarget(
+      name: "VirtualActorsMacrosTests",
+      dependencies: [
+        "VirtualActorsMacros",
+        .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
       ]
     ),
   ]
