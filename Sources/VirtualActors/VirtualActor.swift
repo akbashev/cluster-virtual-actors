@@ -56,6 +56,11 @@ extension VirtualActor {
   /// implement ``shouldDeactivate()`` themselves.
   public func shouldDeactivate() async -> Bool { true }
 
+  /// Self-initiated, unconditional eviction from the virtual node registry:
+  /// the node forgets this instance *without* asking ``shouldDeactivate()``.
+  /// The instance itself is NOT stopped — in-flight work continues and ARC
+  /// frees it once nothing references it; any in-memory state is lost. The
+  /// next lookup by id spawns a fresh instance.
   nonisolated func resign() async throws {
     try await self.actorSystem.virtualActors.cleanActor(self)
   }

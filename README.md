@@ -106,6 +106,18 @@ An actor that should never be deactivated (a supervisor, a directory) simply ref
 
 The question is serialized with the actor's synchronous execution and can never preempt running code. (It *can* run during a suspension of an `async` turn—that's actor reentrancy—so decide from your own state, as above, not from the assumption that no turn is in flight.)
 
+### Explicit deactivation
+
+Don't wait for the sweep—ask directly:
+
+```swift
+// Asks shouldDeactivate(), removes the entry on agreement.
+// Returns false if the actor refused.
+try await system.virtualActors.deactivate(actor)
+```
+
+Unlike the sweep's downgrade this is full removal: in-memory state is lost and the next lookup by ID spawns a fresh instance. It does not stop a live instance—in-flight work continues and ARC frees the actor once nothing references it. An actor can evict itself the same way (`deactivate(self)`): its own `shouldDeactivate()` is the domain check. There is deliberately no public *unconditional* eviction—the registry forgetting a live actor while the instance keeps running is how duplicates are born; the library reserves that for its own bookkeeping after an instance is actually gone.
+
 ## Installation
 
 ```swift

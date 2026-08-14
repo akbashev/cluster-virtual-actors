@@ -22,8 +22,27 @@ public actor ClusterVirtualActorsPlugin {
     )
   }
 
-  public func cleanActor(_ actor: any VirtualActor) async throws {
+  /// Evict an actor from the registry unconditionally, without asking
+  /// `shouldDeactivate()`. The instance is not stopped — in-flight work
+  /// continues and ARC frees it once nothing references it; the next lookup
+  /// by id spawns a fresh instance. Internal on purpose: evicting a live
+  /// actor from the outside duplicates it (the registry forgets while the
+  /// instance keeps running). Used by the library's own bookkeeping — the
+  /// resign hook fires only after the instance is actually gone — and by
+  /// actor self-eviction (``VirtualActor/resign()``). External callers
+  /// should use ``deactivate(_:)``, which asks first.
+  func cleanActor(_ actor: any VirtualActor) async throws {
     try await self.cleanActor(identifiedBy: actor.id)
+  }
+
+  /// The consensual counterpart of ``cleanActor(_:)``: asks the actor — on
+  /// its own executor, via `shouldDeactivate()` — and evicts it only on an
+  /// affirmative answer. The immediate, final version of the idle sweep:
+  /// eviction is full removal, not a downgrade, and any in-memory state is
+  /// lost. Returns `false` if the actor refused.
+  @discardableResult
+  public func deactivate(_ actor: any VirtualActor) async throws -> Bool {
+    try await self.router.deactivateActor(identifiedBy: actor.id)
   }
 
   public init(

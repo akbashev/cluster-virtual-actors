@@ -36,6 +36,28 @@ distributed public actor VirtualNode: Routable {
     self.storage.removeActor(identifiedBy: id)
   }
 
+  /// The immediate, final version of the idle sweep's question: asks the
+  /// actor (``VirtualActor/shouldDeactivate()``) and, on an affirmative
+  /// answer, removes the entry outright instead of downgrading it. Returns
+  /// `false` if the actor refused, or if the entry was touched while the
+  /// question was in flight; `true` once the entry is gone — including when
+  /// it was already missing, so the call is idempotent.
+  distributed func deactivateActor(identifiedBy id: VirtualActorID) async -> Bool {
+    guard let reference = self.storage.virtualActors[id], let actor = reference.actor else { return true }
+    let askedAt = reference.lastUpdated
+    let answer = await actor.whenLocal { await $0.shouldDeactivate() } ?? true
+    guard answer else {
+      // A refusal counts as activity, same as in the sweep.
+      reference.lastUpdated = .now
+      return false
+    }
+    // Remove only if nothing touched the entry while the question was being
+    // answered — a lookup in between already counts as activity.
+    guard reference.lastUpdated == askedAt else { return false }
+    self.storage.removeActor(identifiedBy: id)
+    return true
+  }
+
   public distributed func run() async throws {
     try await self.actorSystem.terminated
   }

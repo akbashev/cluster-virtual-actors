@@ -349,6 +349,86 @@ struct IdleTimeoutTests {
     _ = system
   }
 
+  /// `deactivate` asks the actor first: a busy actor refuses and stays
+  /// resolvable; once idle it agrees and the entry is fully removed — the
+  /// immediate, final version of the sweep's question.
+  @Test
+  func testDeactivateAsksActorBeforeRemoving() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "deactivate-asks") {
+      $0.bindPort = 2569
+      // For singleton plugin to work we need to choose a leader by having 1 member
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(
+        plugin: ClusterVirtualActorsPlugin(
+          replicationFactor: 10,
+          idleTimeoutSettings: .init(
+            isEnabled: false,
+            cleaningInterval: .seconds(60),
+            timeout: .seconds(600)
+          )
+        )
+      )
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let id = VirtualActorID(rawValue: "deactivate-asks")
+    let actor: TestPickyActor = try await getActorEventually(
+      on: system,
+      identifiedBy: id,
+      dependency: TestPickyActor.None()
+    )
+    try await actor.setBusy(true)
+
+    // Busy: the question is refused, nothing is removed.
+    let refused = try await system.virtualActors.deactivate(actor)
+    #expect(refused == false)
+    let found: TestPickyActor = try await node.findActor(identifiedBy: id)
+    #expect(found.id == actor.id)
+
+    // No longer busy: the question is accepted and the entry removed outright.
+    try await actor.setBusy(false)
+    let accepted = try await system.virtualActors.deactivate(actor)
+    #expect(accepted == true)
+    await #expect(throws: VirtualNodeError.actorIsMissing) {
+      let _: TestPickyActor = try await node.findActor(identifiedBy: id)
+    }
+
+    _ = system
+  }
+
+  /// Deactivation is idempotent: an id the router never knew (or already
+  /// forgot) reports success instead of failing.
+  @Test
+  func testDeactivateUnknownActorIsIdempotent() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "deactivate-unknown") {
+      $0.bindPort = 2570
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      $0.plugins.install(plugin: ClusterVirtualActorsPlugin(replicationFactor: 10))
+    }
+
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let id = VirtualActorID(rawValue: "deactivate-unknown")
+    let actor: TestActor = try await getActorEventually(
+      on: system,
+      identifiedBy: id,
+      dependency: TestActor.None()
+    )
+
+    let first = try await system.virtualActors.deactivate(actor)
+    #expect(first == true)
+    // Second call: the router no longer maps the id — still success.
+    let second = try await system.virtualActors.deactivate(actor)
+    #expect(second == true)
+
+    _ = node
+  }
+
   @Test
   func testResignRemovesLocalActor() async throws {
     let (system, node) = await ClusterSystem.startVirtualNode(named: "idle-timeout-resign") {

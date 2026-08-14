@@ -115,15 +115,41 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
         self.inFlightCleaning[id] = nil
       }
       self.actorSystem.log.debug("Marking \(id) as inactive, virtualId: \(virtualId)")
-      try await self.virtualNodes
-        .getNode(for: virtualId.rawValue)?
-        .removeActor(identifiedBy: virtualId)
-
-      // FIXME: What if distributed removeActor fails?
+      guard let node = self.virtualNodes.getNode(for: virtualId.rawValue) else {
+        // The hosting node is gone; the entry died with it.
+        self.idMapping[id] = nil
+        return
+      }
+      do {
+        try await node.removeActor(identifiedBy: virtualId)
+      } catch {
+        // Keep the mapping: the node still holds the actor, so a later
+        // clean (or lookup) must be able to find it again.
+        self.actorSystem.log.error("Failed to remove actor \(virtualId) from node \(node.id): \(error)")
+        throw error
+      }
       self.idMapping[id] = nil
     }
     self.inFlightCleaning[id] = task
     return try await task.value
+  }
+
+  /// The consensual counterpart of ``cleanActor(identifiedBy:)``: asks the
+  /// actor whether it agrees to deactivate and removes it from its node only
+  /// on an affirmative answer. Returns `false` on refusal, `true` once the
+  /// actor is gone (or was never known to this router).
+  distributed func deactivateActor(identifiedBy id: ClusterSystem.ActorID) async throws -> Bool {
+    guard let virtualId = self.idMapping[id] else { return true }
+    guard let node = self.virtualNodes.getNode(for: virtualId.rawValue) else {
+      // The hosting node is gone; the entry died with it.
+      self.idMapping[id] = nil
+      return true
+    }
+    let deactivated = try await node.deactivateActor(identifiedBy: virtualId)
+    if deactivated {
+      self.idMapping[id] = nil
+    }
+    return deactivated
   }
 
   init(
