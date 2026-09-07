@@ -496,6 +496,41 @@ struct IdleTimeoutTests {
     }
   }
 
+  /// The router may start listening before a local virtual node checks in.
+  /// A direct lookup must still resolve the node without requiring callers to
+  /// retry the first virtual-actor operation.
+  @Test
+  func testRouterRefreshesNodesOnCacheMiss() async throws {
+    let system = await ClusterSystem("router-refresh") {
+      $0.bindPort = 2554
+    }
+    let router = await VirtualNodeRouter(
+      actorSystem: system,
+      replicationFactor: 10,
+      idleTimeoutSettings: .default
+    )
+    let node = await VirtualNode(actorSystem: system)
+
+    let actor: TestActor = try await router.getActor(
+      identifiedBy: VirtualActorID(rawValue: "router-refresh-actor"),
+      dependency: TestActor.None()
+    )
+
+    // Simulate the router losing its cached node while the receptionist still
+    // knows about it. The next resolution must use the lookup refresh path.
+    await router.whenLocal { router in
+      await router.terminated(actor: node.id)
+    }
+    let refreshed: TestActor = try await router.getActor(
+      identifiedBy: VirtualActorID(rawValue: "router-refresh-actor"),
+      dependency: TestActor.None()
+    )
+
+    #expect(try await actor.ping())
+    #expect(try await refreshed.ping())
+    _ = node
+  }
+
   @Test
   func testRemoteOnlyActorIsRespawnedAfterSweep() async throws {
     let idle: VirtualNode.IdleTimeoutSettings = .init(

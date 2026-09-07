@@ -47,6 +47,22 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     try? await virtualNode.updateTimeoutSettings(self.idleTimeoutSettings)
   }
 
+  /// The receptionist listing is delivered asynchronously. A lookup can
+  /// therefore arrive after a node has checked in but before the listing
+  /// task has added it to the ring. Refresh the ring from the receptionist's
+  /// current state before reporting that no node is available.
+  private func node(for id: VirtualActorID) async -> VirtualNode? {
+    if let node = self.virtualNodes.getNode(for: id.rawValue) {
+      return node
+    }
+
+    for node in await self.actorSystem.receptionist.lookup(VirtualNode.key) {
+      await self.add(node: node)
+    }
+
+    return self.virtualNodes.getNode(for: id.rawValue)
+  }
+
   /// - Parameters:
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
@@ -54,7 +70,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A {
-    guard let node = self.virtualNodes.getNode(for: id.rawValue) else { throw Error.noNodesAvailable }
+    guard let node = await self.node(for: id) else { throw Error.noNodesAvailable }
 
     let task = self.getTaskForActor(
       actorType: A.self,
