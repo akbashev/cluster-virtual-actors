@@ -14,6 +14,12 @@ distributed public actor VirtualNode: Routable {
     return actor
   }
 
+  /// Returns the live actors currently held by this node so a replacement
+  /// router can reconstruct its directory.
+  distributed func actorPlacements() -> [VirtualActorPlacement] {
+    self.storage.actorPlacements()
+  }
+
   distributed func spawnActor<A: VirtualActor, D: Sendable & Codable>(
     identifiedBy id: VirtualActorID,
     dependency: D
@@ -142,6 +148,16 @@ public enum VirtualNodeError: Error, Codable {
   case typeMismatch
 }
 
+struct VirtualActorPlacement: Codable, Sendable {
+  let virtualActorID: VirtualActorID
+  let actorID: ClusterSystem.ActorID
+
+  init(virtualActorID: VirtualActorID, actorID: ClusterSystem.ActorID) {
+    self.virtualActorID = virtualActorID
+    self.actorID = actorID
+  }
+}
+
 extension VirtualNode {
   static var key: DistributedReception.Key<VirtualNode> { "virtual_node_distributed_key" }
 }
@@ -238,5 +254,15 @@ private struct ActorStorage {
 
   mutating func removeActor(identifiedBy id: VirtualActorID) {
     self.virtualActors.removeValue(forKey: id)
+  }
+
+  func actorPlacements() -> [VirtualActorPlacement] {
+    self.virtualActors.compactMap { virtualActorID, reference in
+      guard let actor = reference.actor else { return nil }
+      return VirtualActorPlacement(
+        virtualActorID: virtualActorID,
+        actorID: actor.id
+      )
+    }
   }
 }

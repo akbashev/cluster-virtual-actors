@@ -7,12 +7,18 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   public enum Error: Swift.Error, Codable {
     case noNodesAvailable
     case noActorsAvailable
+    case actorHostUnavailable
   }
 
   // Hash ring of nodes. `Virtual` here is part of `VirtualActor` term.
   private var virtualNodes: HashRing<VirtualNode>
-  // When cleaning up we need to associate actor id with virtual id
-  private var idMapping: [ClusterSystem.ActorID: VirtualActorID] = [:]
+  private struct Registration {
+    let virtualID: VirtualActorID
+    let hostID: ClusterSystem.ActorID
+  }
+  // The concrete actor identity is the lifecycle key. The value records the
+  // logical identity and the exact virtual node currently hosting it.
+  private var registrations: [ClusterSystem.ActorID: Registration] = [:]
   // In flight tasks for finding/spawning
   private var inFlightSpawning: [VirtualActorID: Task<any VirtualActor, Swift.Error>] = [:]
   // In flight tasks for cleaning
@@ -25,6 +31,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     for node in self.virtualNodes.nodes where node.id == id {
       self.virtualNodes.removeNode(node)
     }
+    self.registrations = self.registrations.filter { $0.value.hostID != id }
   }
 
   private func findVirtualNodes() {
@@ -45,6 +52,13 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     self.virtualNodes.addNode(virtualNode)
     self.watchTermination(of: virtualNode)
     try? await virtualNode.updateTimeoutSettings(self.idleTimeoutSettings)
+    for placement in (try? await virtualNode.actorPlacements()) ?? [] {
+      guard self.registrations[placement.actorID] == nil else { continue }
+      self.registrations[placement.actorID] = Registration(
+        virtualID: placement.virtualActorID,
+        hostID: virtualNode.id
+      )
+    }
   }
 
   /// The receptionist listing is delivered asynchronously. A lookup can
@@ -63,6 +77,17 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     return self.virtualNodes.getNode(for: id.rawValue)
   }
 
+  private func node(withID id: ClusterSystem.ActorID) async -> VirtualNode? {
+    if let node = self.virtualNodes.nodes.first(where: { $0.id == id }) {
+      return node
+    }
+
+    for node in await self.actorSystem.receptionist.lookup(VirtualNode.key) {
+      await self.add(node: node)
+    }
+    return self.virtualNodes.nodes.first(where: { $0.id == id })
+  }
+
   /// - Parameters:
   /// - id—external (not system) id of an actor.
   /// - dependency—only needed when spawning an actor.
@@ -70,6 +95,21 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A {
+    if let (actorID, registration) = self.registrations.first(where: { $0.value.virtualID == id }) {
+      guard let hostingNode = await self.node(withID: registration.hostID) else {
+        throw Error.actorHostUnavailable
+      }
+      do {
+        let actor: A = try await hostingNode.findActor(identifiedBy: id)
+        guard actor.id == actorID else {
+          throw VirtualNodeError.typeMismatch
+        }
+        return actor
+      } catch VirtualNodeError.actorIsMissing {
+        self.registrations[actorID] = nil
+      }
+    }
+
     guard let node = await self.node(for: id) else { throw Error.noNodesAvailable }
 
     let task = self.getTaskForActor(
@@ -80,8 +120,11 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     )
 
     let actor = try await task.value
-    self.idMapping[actor.id] = id
     guard let typed = actor as? A else { throw VirtualNodeError.typeMismatch }
+    self.registrations[actor.id] = Registration(
+      virtualID: id,
+      hostID: node.id
+    )
     return typed
   }
 
@@ -121,7 +164,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   }
 
   distributed func cleanActor(identifiedBy id: ClusterSystem.ActorID) async throws {
-    guard let virtualId = self.idMapping[id] else { return }
+    guard let registration = self.registrations[id] else { return }
 
     if let task = self.inFlightCleaning[id] {
       return try await task.value
@@ -130,21 +173,20 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
       defer {
         self.inFlightCleaning[id] = nil
       }
-      self.actorSystem.log.debug("Marking \(id) as inactive, virtualId: \(virtualId)")
-      guard let node = self.virtualNodes.getNode(for: virtualId.rawValue) else {
-        // The hosting node is gone; the entry died with it.
-        self.idMapping[id] = nil
+      self.actorSystem.log.debug("Marking \(id) as inactive, virtualId: \(registration.virtualID)")
+      guard let node = await self.node(withID: registration.hostID) else {
+        self.registrations[id] = nil
         return
       }
       do {
-        try await node.removeActor(identifiedBy: virtualId)
+        try await node.removeActor(identifiedBy: registration.virtualID)
       } catch {
         // Keep the mapping: the node still holds the actor, so a later
         // clean (or lookup) must be able to find it again.
-        self.actorSystem.log.error("Failed to remove actor \(virtualId) from node \(node.id): \(error)")
+        self.actorSystem.log.error("Failed to remove actor \(registration.virtualID) from node \(node.id): \(error)")
         throw error
       }
-      self.idMapping[id] = nil
+      self.registrations[id] = nil
     }
     self.inFlightCleaning[id] = task
     return try await task.value
@@ -155,15 +197,14 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// on an affirmative answer. Returns `false` on refusal, `true` once the
   /// actor is gone (or was never known to this router).
   distributed func deactivateActor(identifiedBy id: ClusterSystem.ActorID) async throws -> Bool {
-    guard let virtualId = self.idMapping[id] else { return true }
-    guard let node = self.virtualNodes.getNode(for: virtualId.rawValue) else {
-      // The hosting node is gone; the entry died with it.
-      self.idMapping[id] = nil
+    guard let registration = self.registrations[id] else { return true }
+    guard let node = await self.node(withID: registration.hostID) else {
+      self.registrations[id] = nil
       return true
     }
-    let deactivated = try await node.deactivateActor(identifiedBy: virtualId)
+    let deactivated = try await node.deactivateActor(identifiedBy: registration.virtualID)
     if deactivated {
-      self.idMapping[id] = nil
+      self.registrations[id] = nil
     }
     return deactivated
   }
