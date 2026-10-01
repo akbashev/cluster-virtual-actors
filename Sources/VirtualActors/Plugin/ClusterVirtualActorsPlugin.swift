@@ -22,6 +22,30 @@ public actor ClusterVirtualActorsPlugin {
     )
   }
 
+  /// A reference to the actor that stays valid while the actor deactivates, restarts or moves:
+  /// each call reaches its current instance, activating it with `dependency` if it isn't running.
+  /// Unlike ``getActor(identifiedBy:dependency:)``, which returns one instance, the reference can be
+  /// kept, and sent to other nodes that installed the plugin with
+  /// `ClusterSystemSettings.installVirtualActors(_:)`.
+  public func reference<A: VirtualActor, D: Codable & Sendable>(
+    identifiedBy id: VirtualActorID,
+    dependency: D
+  ) throws -> A {
+    let address = try VirtualActorAddress(id: id, actorType: A.self, dependency: dependency)
+    let metadata = ActorMetadata()
+    metadata.virtualActor = address
+    return try self.actorSystem.interceptCalls(
+      to: A.self,
+      metadata: metadata,
+      interceptor: VirtualActorInterceptor(plugin: self, address: address)
+    )
+  }
+
+  /// The current instance of the actor at `address`, activated if it isn't running.
+  func instance(of address: VirtualActorAddress) async throws -> (ClusterSystem, ClusterSystem.ActorID) {
+    (self.actorSystem, try await address.instanceID(using: self.router))
+  }
+
   /// Evict an actor from the registry unconditionally, without asking
   /// `shouldDeactivate()`. The instance is not stopped — in-flight work
   /// continues and ARC frees it once nothing references it; the next lookup
@@ -86,6 +110,11 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
 
   nonisolated public func onActorReady<Act: DistributedActor>(_ actor: Act) where Act.ID == ClusterSystem.ActorID {
     // no-op
+  }
+
+  /// Intercepts references to virtual actors received from other nodes.
+  nonisolated public func interceptor(for id: ClusterSystem.ActorID) -> (any RemoteCallInterceptor)? {
+    id.metadata.virtualActor.map { VirtualActorInterceptor(plugin: self, address: $0) }
   }
 
   nonisolated public func onResignID(_ id: ClusterSystem.ActorID) {

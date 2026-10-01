@@ -502,7 +502,7 @@ struct IdleTimeoutTests {
   @Test
   func testRouterRefreshesNodesOnCacheMiss() async throws {
     let system = await ClusterSystem("router-refresh") {
-      $0.bindPort = 2554
+      $0.bindPort = 2558
     }
     let router = await VirtualNodeRouter(
       actorSystem: system,
