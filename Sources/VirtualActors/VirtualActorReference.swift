@@ -4,8 +4,8 @@ import Foundation
 
 /// What a reference to a virtual actor carries in its ``ActorID``, so that any node can reach the
 /// actor — activating it if needed — instead of one incarnation of it.
-public struct VirtualActorAddress: Codable, Sendable, Hashable {
-  public let id: VirtualActorID
+struct VirtualActorAddress: Codable, Sendable, Hashable {
+  let id: VirtualActorID
   /// The actor's type and its dependency, to activate it on any node.
   let actorType: String
   let dependencyType: String
@@ -52,19 +52,13 @@ public enum VirtualActorReferenceError: Error, Codable, Sendable {
 
 extension ActorMetadataKeys {
   /// Marks a reference to a virtual actor, made by ``ClusterVirtualActorsPlugin/reference(identifiedBy:dependency:)``.
-  public var virtualActor: Key<VirtualActorAddress> { "$virtualActor" }
-}
-
-extension ClusterSystemSettings {
-  /// Installs the virtual actors plugin, and lets references to virtual actors work on every node
-  /// they're sent to.
-  public mutating func installVirtualActors(_ plugin: ClusterVirtualActorsPlugin = .init()) {
-    self.plugins.install(plugin: plugin)
-    self.propagateMetadata(\.virtualActor)
-  }
+  var virtualActor: Key<VirtualActorAddress> { "$virtualActor" }
 }
 
 /// Delivers a reference's calls to the virtual actor's current instance, activating it if needed.
+///
+/// The instance's location is cached. A call that finds the instance gone (a dead letter, so it
+/// didn't run) asks for the location again and is retried once.
 struct VirtualActorInterceptor: RemoteCallInterceptor {
   let plugin: ClusterVirtualActorsPlugin
   let address: VirtualActorAddress
@@ -77,14 +71,16 @@ struct VirtualActorInterceptor: RemoteCallInterceptor {
     returning: Res.Type
   ) async throws -> Res
   where Act: DistributedActor, Act.ID == ActorID, Err: Error, Res: Codable {
-    let (system, instance) = try await self.plugin.instance(of: self.address)
-    return try await system.forwardCall(
-      to: instance,
-      target: target,
-      invocation: &invocation,
-      throwing: throwing,
-      returning: returning
-    )
+    let (system, location) = try await self.plugin.location(of: self.address)
+    do {
+      return try await system.forwardCall(
+        to: location, target: target, invocation: &invocation, throwing: throwing, returning: returning)
+    } catch is DeadLetterError {
+      await self.plugin.forget(self.address.id, at: location)
+      let (system, location) = try await self.plugin.location(of: self.address)
+      return try await system.forwardCall(
+        to: location, target: target, invocation: &invocation, throwing: throwing, returning: returning)
+    }
   }
 
   func interceptRemoteCallVoid<Act, Err>(
@@ -94,7 +90,13 @@ struct VirtualActorInterceptor: RemoteCallInterceptor {
     throwing: Err.Type
   ) async throws
   where Act: DistributedActor, Act.ID == ActorID, Err: Error {
-    let (system, instance) = try await self.plugin.instance(of: self.address)
-    try await system.forwardCallVoid(to: instance, target: target, invocation: &invocation, throwing: throwing)
+    let (system, location) = try await self.plugin.location(of: self.address)
+    do {
+      try await system.forwardCallVoid(to: location, target: target, invocation: &invocation, throwing: throwing)
+    } catch is DeadLetterError {
+      await self.plugin.forget(self.address.id, at: location)
+      let (system, location) = try await self.plugin.location(of: self.address)
+      try await system.forwardCallVoid(to: location, target: target, invocation: &invocation, throwing: throwing)
+    }
   }
 }

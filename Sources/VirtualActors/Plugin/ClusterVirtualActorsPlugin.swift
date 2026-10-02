@@ -11,39 +11,59 @@ public actor ClusterVirtualActorsPlugin {
   private let replicationFactor: UInt64
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
-  /// Get an actor and if it's not available—create it
+  /// This node's reference for each virtual actor, made once and reused, so references to the
+  /// same actor on this node are equal.
+  private var references: [VirtualActorID: ClusterSystem.ActorID] = [:]
+  /// Where each actor's current instance runs, as last seen; asked again from the router when a
+  /// call finds the instance gone.
+  private var locations: [VirtualActorID: ClusterSystem.ActorID] = [:]
+
+  /// A reference to the actor identified by `id`. Each call reaches its current instance, which is
+  /// activated with `dependency` if it isn't running, so the reference stays valid while the actor
+  /// deactivates, restarts or moves. It can be kept, and sent to other nodes.
   public func getActor<A: VirtualActor, D: Codable & Sendable>(
     identifiedBy id: VirtualActorID,
     dependency: D
-  ) async throws -> A where A: Codable {
-    try await self.router.getActor(
-      identifiedBy: id,
-      dependency: dependency
-    )
-  }
-
-  /// A reference to the actor that stays valid while the actor deactivates, restarts or moves:
-  /// each call reaches its current instance, activating it with `dependency` if it isn't running.
-  /// Unlike ``getActor(identifiedBy:dependency:)``, which returns one instance, the reference can be
-  /// kept, and sent to other nodes that installed the plugin with
-  /// `ClusterSystemSettings.installVirtualActors(_:)`.
-  public func reference<A: VirtualActor, D: Codable & Sendable>(
-    identifiedBy id: VirtualActorID,
-    dependency: D
-  ) throws -> A {
+  ) throws -> A where A: Codable {
+    if let reference = self.references[id] {
+      return try A.resolve(id: reference, using: self.actorSystem)
+    }
     let address = try VirtualActorAddress(id: id, actorType: A.self, dependency: dependency)
     let metadata = ActorMetadata()
     metadata.virtualActor = address
-    return try self.actorSystem.interceptCalls(
+    let actor = try self.actorSystem.interceptCalls(
       to: A.self,
       metadata: metadata,
       interceptor: VirtualActorInterceptor(plugin: self, address: address)
     )
+    self.references[id] = actor.id
+    return actor
   }
 
-  /// The current instance of the actor at `address`, activated if it isn't running.
-  func instance(of address: VirtualActorAddress) async throws -> (ClusterSystem, ClusterSystem.ActorID) {
-    (self.actorSystem, try await address.instanceID(using: self.router))
+  /// The current instance itself, activated if it isn't running. For the plugin's own use and
+  /// tests: callers hold references, which outlive instances.
+  func instance<A: VirtualActor, D: Codable & Sendable>(
+    identifiedBy id: VirtualActorID,
+    dependency: D
+  ) async throws -> A where A: Codable {
+    try await self.router.getActor(identifiedBy: id, dependency: dependency)
+  }
+
+  /// Where the current instance of the actor at `address` runs, activating it if needed.
+  func location(of address: VirtualActorAddress) async throws -> (ClusterSystem, ClusterSystem.ActorID) {
+    if let location = self.locations[address.id] {
+      return (self.actorSystem, location)
+    }
+    let location = try await address.instanceID(using: self.router)
+    self.locations[address.id] = location
+    return (self.actorSystem, location)
+  }
+
+  /// Forgets that the actor at `id` runs at `location`, after a call found it gone.
+  func forget(_ id: VirtualActorID, at location: ClusterSystem.ActorID) {
+    if self.locations[id] == location {
+      self.locations[id] = nil
+    }
   }
 
   /// Evict an actor from the registry unconditionally, without asking
@@ -64,12 +84,41 @@ public actor ClusterVirtualActorsPlugin {
   /// affirmative answer. The immediate, final version of the idle sweep:
   /// eviction is full removal, not a downgrade, and any in-memory state is
   /// lost. Returns `false` if the actor refused.
+  ///
+  /// - Parameter actor: A reference from ``getActor(identifiedBy:dependency:)``, or the actor
+  ///   itself, e.g. `self` inside it.
   @discardableResult
   public func deactivate(_ actor: any VirtualActor) async throws -> Bool {
-    try await self.router.deactivateActor(identifiedBy: actor.id)
+    if let address = actor.id.metadata.virtualActor {
+      self.locations[address.id] = nil
+      return try await self.router.deactivateActor(identifiedBy: address.id)
+    }
+    self.locations = self.locations.filter { $0.value != actor.id }
+    return try await self.router.deactivateActor(identifiedBy: actor.id)
   }
 
-  public init(
+  /// A plugin to install in `settings`:
+  /// ```swift
+  /// let plugin = ClusterVirtualActorsPlugin.configuring(&settings)
+  /// settings.plugins.install(plugin: plugin)
+  /// ```
+  ///
+  /// - Parameter settings: The settings the plugin is installed in. It declares there that references
+  ///   to virtual actors carry their address to other nodes, so they work wherever they're sent.
+  public static func configuring(
+    _ settings: inout ClusterSystemSettings,
+    replicationFactor: UInt64 = 100,
+    idleTimeoutSettings: VirtualNode.IdleTimeoutSettings = .default
+  ) -> ClusterVirtualActorsPlugin {
+    settings.propagateMetadata(\.virtualActor)
+    return ClusterVirtualActorsPlugin(
+      replicationFactor: replicationFactor,
+      idleTimeoutSettings: idleTimeoutSettings
+    )
+  }
+
+  /// For the package's own tests, which don't send references between nodes.
+  init(
     replicationFactor: UInt64 = 100,
     idleTimeoutSettings: VirtualNode.IdleTimeoutSettings = .default
   ) {
@@ -126,6 +175,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
   /// Runs isolated on the plugin actor so `stop()` cannot nil `router`
   /// between the check and the use (shutdown race).
   private func cleanAfterResign(_ id: ClusterSystem.ActorID) async {
+    self.locations = self.locations.filter { $0.value != id }
     guard let router = self.router else { return }
     try? await router.cleanActor(identifiedBy: id)
   }
