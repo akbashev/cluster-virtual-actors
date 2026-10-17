@@ -74,12 +74,24 @@ struct VirtualActorInterceptor: RemoteCallInterceptor {
     let (system, location) = try await self.plugin.location(of: self.address)
     do {
       return try await system.forwardCall(
-        to: location, target: target, invocation: &invocation, throwing: throwing, returning: returning)
+        to: location,
+        as: Act.self,
+        target: target,
+        invocation: &invocation,
+        throwing: throwing,
+        returning: returning
+      )
     } catch is DeadLetterError {
       await self.plugin.forget(self.address.id, at: location)
       let (system, location) = try await self.plugin.location(of: self.address)
       return try await system.forwardCall(
-        to: location, target: target, invocation: &invocation, throwing: throwing, returning: returning)
+        to: location,
+        as: Act.self,
+        target: target,
+        invocation: &invocation,
+        throwing: throwing,
+        returning: returning
+      )
     }
   }
 
@@ -92,11 +104,11 @@ struct VirtualActorInterceptor: RemoteCallInterceptor {
   where Act: DistributedActor, Act.ID == ActorID, Err: Error {
     let (system, location) = try await self.plugin.location(of: self.address)
     do {
-      try await system.forwardCallVoid(to: location, target: target, invocation: &invocation, throwing: throwing)
+      try await system.forwardCallVoid(to: location, as: Act.self, target: target, invocation: &invocation, throwing: throwing)
     } catch is DeadLetterError {
       await self.plugin.forget(self.address.id, at: location)
       let (system, location) = try await self.plugin.location(of: self.address)
-      try await system.forwardCallVoid(to: location, target: target, invocation: &invocation, throwing: throwing)
+      try await system.forwardCallVoid(to: location, as: Act.self, target: target, invocation: &invocation, throwing: throwing)
     }
   }
 }

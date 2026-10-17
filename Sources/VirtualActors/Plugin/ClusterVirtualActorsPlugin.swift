@@ -6,8 +6,20 @@ typealias DefaultDistributedActorSystem = ClusterSystem
 /// Cluster system plugin to get an actor by some id
 public actor ClusterVirtualActorsPlugin {
 
-  private var actorSystem: ClusterSystem!
-  private var router: VirtualNodeRouter!
+  /// Running once its system starts it, with the router it reaches actors through; stopped before
+  /// that, and once its system stops it.
+  private var state = State.stopped
+
+  private enum State {
+    case stopped
+    case running(ClusterSystem, VirtualNodeRouter)
+  }
+
+  /// Its system and router, while it runs.
+  private func running() throws(VirtualActorError) -> (actorSystem: ClusterSystem, router: VirtualNodeRouter) {
+    guard case .running(let actorSystem, let router) = self.state else { throw .notRunning }
+    return (actorSystem, router)
+  }
   private let replicationFactor: UInt64
   private let idleTimeoutSettings: VirtualNode.IdleTimeoutSettings
 
@@ -25,13 +37,14 @@ public actor ClusterVirtualActorsPlugin {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) throws -> A where A: Codable {
+    let actorSystem = try self.running().actorSystem
     if let reference = self.references[id] {
-      return try A.resolve(id: reference, using: self.actorSystem)
+      return try A.resolve(id: reference, using: actorSystem)
     }
     let address = try VirtualActorAddress(id: id, actorType: A.self, dependency: dependency)
     let metadata = ActorMetadata()
     metadata.virtualActor = address
-    let actor = try self.actorSystem.interceptCalls(
+    let actor = try actorSystem.interceptCalls(
       to: A.self,
       metadata: metadata,
       interceptor: VirtualActorInterceptor(plugin: self, address: address)
@@ -46,17 +59,18 @@ public actor ClusterVirtualActorsPlugin {
     identifiedBy id: VirtualActorID,
     dependency: D
   ) async throws -> A where A: Codable {
-    try await self.router.getActor(identifiedBy: id, dependency: dependency)
+    try await self.running().router.getActor(identifiedBy: id, dependency: dependency)
   }
 
   /// Where the current instance of the actor at `address` runs, activating it if needed.
   func location(of address: VirtualActorAddress) async throws -> (ClusterSystem, ClusterSystem.ActorID) {
+    let (actorSystem, router) = try self.running()
     if let location = self.locations[address.id] {
-      return (self.actorSystem, location)
+      return (actorSystem, location)
     }
-    let location = try await address.instanceID(using: self.router)
+    let location = try await address.instanceID(using: router)
     self.locations[address.id] = location
-    return (self.actorSystem, location)
+    return (actorSystem, location)
   }
 
   /// Forgets that the actor at `id` runs at `location`, after a call found it gone.
@@ -91,10 +105,10 @@ public actor ClusterVirtualActorsPlugin {
   public func deactivate(_ actor: any VirtualActor) async throws -> Bool {
     if let address = actor.id.metadata.virtualActor {
       self.locations[address.id] = nil
-      return try await self.router.deactivateActor(identifiedBy: address.id)
+      return try await self.running().router.deactivateActor(identifiedBy: address.id)
     }
     self.locations = self.locations.filter { $0.value != actor.id }
-    return try await self.router.deactivateActor(identifiedBy: actor.id)
+    return try await self.running().router.deactivateActor(identifiedBy: actor.id)
   }
 
   /// A plugin to install in `settings`:
@@ -127,7 +141,7 @@ public actor ClusterVirtualActorsPlugin {
   }
 
   private func cleanActor(identifiedBy id: ClusterSystem.ActorID) async throws {
-    try await self.router.cleanActor(identifiedBy: id)
+    try await self.running().router.cleanActor(identifiedBy: id)
   }
 
 }
@@ -141,8 +155,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
   }
 
   public func start(_ system: ClusterSystem) async throws {
-    self.actorSystem = system
-    self.router = try await system.singleton.host(name: "virtual_actor_node_router") {
+    let router = try await system.singleton.host(name: "virtual_actor_node_router") {
       [replicationFactor, idleTimeoutSettings] actorSystem in
       await VirtualNodeRouter(
         actorSystem: actorSystem,
@@ -150,11 +163,11 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
         idleTimeoutSettings: idleTimeoutSettings
       )
     }
+    self.state = .running(system, router)
   }
 
   public func stop(_ system: ClusterSystem) async {
-    self.actorSystem = nil
-    self.router = nil
+    self.state = .stopped
   }
 
   nonisolated public func onActorReady<Act: DistributedActor>(_ actor: Act) where Act.ID == ClusterSystem.ActorID {
@@ -176,7 +189,7 @@ extension ClusterVirtualActorsPlugin: ActorLifecyclePlugin {
   /// between the check and the use (shutdown race).
   private func cleanAfterResign(_ id: ClusterSystem.ActorID) async {
     self.locations = self.locations.filter { $0.value != id }
-    guard let router = self.router else { return }
+    guard case .running(_, let router) = self.state else { return }
     try? await router.cleanActor(identifiedBy: id)
   }
 }
