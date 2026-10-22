@@ -55,6 +55,15 @@ extension ActorMetadataKeys {
   var virtualActor: Key<VirtualActorAddress> { "$virtualActor" }
 }
 
+extension ClusterSystem.ActorID {
+  /// The virtual actor this is a reference to, `nil` for any other actor. References to the same
+  /// virtual actor made on different nodes, or before and after a restart, are different IDs: this
+  /// is what they share.
+  public var virtualActorID: VirtualActorID? {
+    self.metadata.virtualActor?.id
+  }
+}
+
 /// Delivers a reference's calls to the virtual actor's current instance, activating it if needed.
 ///
 /// The instance's location is cached. A call that finds the instance gone (a dead letter, so it

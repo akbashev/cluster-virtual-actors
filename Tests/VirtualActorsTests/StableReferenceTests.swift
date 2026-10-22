@@ -120,4 +120,43 @@ struct StableReferenceTests {
     #expect(try await virtualNode.actorPlacements().isEmpty)
     #expect(try await remoteKeeper.increment().value == 1)
   }
+
+  /// Two nodes' references to one virtual actor are different IDs, which share its virtual ID; an
+  /// actor that isn't virtual has none.
+  @Test
+  func referencesFromTwoNodes_shareTheVirtualActorID() async throws {
+    let first = await ClusterSystem("virtual-id-first") {
+      $0.bindPort = 2732
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      let plugin = ClusterVirtualActorsPlugin.configuring(&$0, replicationFactor: 10)
+      $0.plugins.install(plugin: plugin)
+    }
+    let second = await ClusterSystem("virtual-id-second") {
+      $0.bindPort = 2733
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      let plugin = ClusterVirtualActorsPlugin.configuring(&$0, replicationFactor: 10)
+      $0.plugins.install(plugin: plugin)
+    }
+    defer {
+      try? first.shutdown()
+      try? second.shutdown()
+    }
+    let virtualNode = await VirtualNode(actorSystem: first)
+    second.cluster.join(endpoint: first.cluster.endpoint)
+    try await first.cluster.waitFor(second.cluster.node, .up, within: .seconds(10))
+
+    let id = VirtualActorID(rawValue: "counter-2")
+    let fromFirst: Counter = try await first.virtualActors.getActor(identifiedBy: id, dependency: Counter.None())
+    let fromSecond: Counter = try await second.virtualActors.getActor(identifiedBy: id, dependency: Counter.None())
+    #expect(fromFirst.id != fromSecond.id)
+    #expect(fromFirst.id.virtualActorID == id)
+    #expect(fromSecond.id.virtualActorID == id)
+    // Both reach the one actor.
+    #expect(try await fromFirst.increment().value == 1)
+    #expect(try await fromSecond.increment().value == 2)
+    #expect(Keeper(actorSystem: second).id.virtualActorID == nil)
+    _ = virtualNode
+  }
 }
