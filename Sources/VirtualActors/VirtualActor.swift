@@ -48,6 +48,8 @@ public protocol VirtualActor: DistributedActor, Codable where ActorSystem == Clu
 
 public enum VirtualActorError: Error, Codable, Sendable {
   case spawnDependencyTypeMismatch
+  /// The plugin isn't running: its system hasn't started it, or has stopped it.
+  case notRunning
 }
 
 extension VirtualActor {

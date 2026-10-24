@@ -24,12 +24,13 @@ try await order.add(item: .book, count: 1)
 
 ## Quick start
 
-Install the plugins (order matters—the virtual actor store is hosted as a cluster singleton):
+Install the plugins (order matters—the virtual actor store is hosted as a cluster singleton). `configuring(&settings)` also lets references to virtual actors travel between nodes:
 
 ```swift
 let system = await ClusterSystem("my-node") {
   $0.plugins.install(plugin: ClusterSingletonPlugin())
-  $0.plugins.install(plugin: ClusterVirtualActorsPlugin())
+  let virtualActors = ClusterVirtualActorsPlugin.configuring(&$0)
+  $0.plugins.install(plugin: virtualActors)
 }
 ```
 
@@ -66,6 +67,15 @@ let order: OrderActor = try await system.virtualActors.getActor(
 
 The dependency is any `Codable & Sendable` value; it crosses the wire if the actor is activated on a remote node. A wrong dependency type fails the spawn with `VirtualActorError.spawnDependencyTypeMismatch`.
 
+## References
+
+`getActor` returns a *reference* to the actor, not one of its instances. Each call through it reaches whichever instance is running now, and activates one if none is—so a reference stays valid while the actor is deactivated, reactivated, or moved to another node. Keep it, store it, and pass it to actors on other nodes: it keeps working there.
+
+- **Identity is the `VirtualActorID`.** Like a cluster singleton's name, it's how you refer to the actor; each node gets its reference from `getActor`.
+- **Equality.** A node hands out one reference per actor, so references from `getActor` on the same node are `==`, and a reference passed to another node stays equal to the original. References obtained independently on different nodes are different handles and aren't `==`—compare the `VirtualActorID`s you resolved them by.
+- **`self` is an instance, not a reference.** Inside a virtual actor, `self` is the current instance, which goes away on deactivation. To hand out a reference to itself—subscribing to events, registering somewhere—an actor passes `getActor` of its own ID, not `self`.
+- **Cost.** A call through a reference goes to the instance's last known location; only when the instance is gone does it ask the cluster again, and retry the call once.
+
 Need custom spawn logic? Declare your own `spawn(on:dependency:)` and the macro steps aside.
 
 ## Deactivation
@@ -73,16 +83,16 @@ Need custom spawn logic? Declare your own `spawn(on:dependency:)` and the macro 
 Enable the idle sweep to reclaim actors nobody has used for a while:
 
 ```swift
-$0.plugins.install(
-  plugin: ClusterVirtualActorsPlugin(
-    replicationFactor: 100,
-    idleTimeoutSettings: .init(
-      isEnabled: true,
-      cleaningInterval: .seconds(60),
-      timeout: .seconds(10 * 60)
-    )
+let virtualActors = ClusterVirtualActorsPlugin.configuring(
+  &$0,
+  replicationFactor: 100,
+  idleTimeoutSettings: .init(
+    isEnabled: true,
+    cleaningInterval: .seconds(60),
+    timeout: .seconds(10 * 60)
   )
 )
+$0.plugins.install(plugin: virtualActors)
 ```
 
 How it works, precisely:
@@ -112,11 +122,11 @@ Don't wait for the sweep—ask directly:
 
 ```swift
 // Asks shouldDeactivate(), removes the entry on agreement.
-// Returns false if the actor refused.
-try await system.virtualActors.deactivate(actor)
+// Returns false if the actor refused. Takes a reference, or `self` inside the actor.
+try await system.virtualActors.deactivate(order)
 ```
 
-Unlike the sweep's downgrade this is full removal: in-memory state is lost and the next lookup by ID spawns a fresh instance. It does not stop a live instance—in-flight work continues and ARC frees the actor once nothing references it. An actor can evict itself the same way (`deactivate(self)`): its own `shouldDeactivate()` is the domain check. There is deliberately no public *unconditional* eviction—the registry forgetting a live actor while the instance keeps running is how duplicates are born; the library reserves that for its own bookkeeping after an instance is actually gone.
+Unlike the sweep's downgrade this is full removal: in-memory state is lost and the next call through any reference activates a fresh instance. It does not stop a live instance—in-flight work continues and ARC frees the actor once nothing references it. An actor can evict itself the same way (`deactivate(self)`): its own `shouldDeactivate()` is the domain check. There is deliberately no public *unconditional* eviction—the registry forgetting a live actor while the instance keeps running is how duplicates are born; the library reserves that for its own bookkeeping after an instance is actually gone.
 
 ## Installation
 
@@ -126,7 +136,7 @@ dependencies: [
 ]
 ```
 
-Requires Swift 6.2+, macOS 15 / iOS 18 / tvOS 18 / watchOS 11 (Linux supported), and tracks `main` of [swift-distributed-actors](https://github.com/apple/swift-distributed-actors).
+Requires Swift 6.2+, macOS 15 / iOS 18 / tvOS 18 / watchOS 11 (Linux supported), and tracks `main` of [swift-distributed-actors](https://github.com/apple/swift-distributed-actors). References need public call interception in swift-distributed-actors, which isn't released yet.
 
 ## See also
 

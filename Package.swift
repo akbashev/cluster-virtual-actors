@@ -29,8 +29,8 @@ let package = Package(
   ],
   dependencies: [
     .package(
-      url: "https://github.com/apple/swift-distributed-actors.git",
-      branch: "main"
+      url: "https://github.com/turgai-labs/swift-distributed-actors.git",
+      branch: "turgai-integration"
     ),
     .package(
       url: "https://github.com/apple/swift-async-algorithms.git",

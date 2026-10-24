@@ -188,7 +188,7 @@ struct IdleTimeoutTests {
     try await system.cluster.joined(within: .seconds(3))
 
     let id = VirtualActorID(rawValue: "idle-timeout-remove")
-    let _: TestActor = try await system.virtualActors.getActor(
+    let _: TestActor = try await system.virtualActors.instance(
       identifiedBy: id,
       dependency: TestActor.None()
     )
@@ -276,7 +276,7 @@ struct IdleTimeoutTests {
     try await Task.sleep(for: .milliseconds(900))
 
     // Re-resolving must revive the same instance — never spawn a duplicate.
-    let revived: TestActor = try await system.virtualActors.getActor(
+    let revived: TestActor = try await system.virtualActors.instance(
       identifiedBy: id,
       dependency: TestActor.None()
     )
@@ -452,7 +452,7 @@ struct IdleTimeoutTests {
     try await system.cluster.joined(within: .seconds(3))
 
     let id = VirtualActorID(rawValue: "idle-timeout-resign")
-    let actor: TestActor = try await system.virtualActors.getActor(
+    let actor: TestActor = try await system.virtualActors.instance(
       identifiedBy: id,
       dependency: TestActor.None()
     )
@@ -486,7 +486,7 @@ struct IdleTimeoutTests {
     try await routerSystem.cluster.joined(within: .seconds(3))
 
     let id = VirtualActorID(rawValue: "actor-a")
-    let actor: TestActor = try await routerSystem.virtualActors.getActor(
+    let actor: TestActor = try await routerSystem.virtualActors.instance(
       identifiedBy: id,
       dependency: TestActor.None()
     )
@@ -502,7 +502,7 @@ struct IdleTimeoutTests {
   @Test
   func testRouterRefreshesNodesOnCacheMiss() async throws {
     let system = await ClusterSystem("router-refresh") {
-      $0.bindPort = 2554
+      $0.bindPort = 2558
     }
     let router = await VirtualNodeRouter(
       actorSystem: system,
@@ -914,12 +914,12 @@ struct IdleTimeoutTests {
   ) async throws -> A {
     for _ in 0..<100 {
       do {
-        return try await system.virtualActors.getActor(identifiedBy: id, dependency: dependency)
+        return try await system.virtualActors.instance(identifiedBy: id, dependency: dependency)
       } catch VirtualNodeRouter.Error.noNodesAvailable {
         try await Task.sleep(for: .milliseconds(50))
       }
     }
     // One last attempt — either succeeds or throws the real error.
-    return try await system.virtualActors.getActor(identifiedBy: id, dependency: dependency)
+    return try await system.virtualActors.instance(identifiedBy: id, dependency: dependency)
   }
 }

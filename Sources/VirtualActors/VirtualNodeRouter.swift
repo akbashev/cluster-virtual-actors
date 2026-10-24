@@ -196,6 +196,12 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   /// actor whether it agrees to deactivate and removes it from its node only
   /// on an affirmative answer. Returns `false` on refusal, `true` once the
   /// actor is gone (or was never known to this router).
+  /// ``deactivateActor(identifiedBy:)-(ClusterSystem.ActorID)`` for the instance of the actor with `virtualID`, if it runs.
+  distributed func deactivateActor(identifiedBy virtualID: VirtualActorID) async throws -> Bool {
+    guard let (id, _) = self.registrations.first(where: { $0.value.virtualID == virtualID }) else { return true }
+    return try await self.deactivateActor(identifiedBy: id)
+  }
+
   distributed func deactivateActor(identifiedBy id: ClusterSystem.ActorID) async throws -> Bool {
     guard let registration = self.registrations[id] else { return true }
     guard let node = await self.node(withID: registration.hostID) else {

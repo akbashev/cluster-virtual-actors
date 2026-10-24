@@ -69,7 +69,7 @@ struct SingleFlightTests {
     ) { group in
       for _ in 0..<20 {
         group.addTask {
-          let actor: SingleFlightActor = try await system.virtualActors.getActor(
+          let actor: SingleFlightActor = try await system.virtualActors.instance(
             identifiedBy: id,
             dependency: SingleFlightActor.None()
           )
@@ -159,7 +159,7 @@ struct SingleFlightTests {
     var actorID: VirtualActorID?
     for index in 0..<40 {
       let candidateID = VirtualActorID(rawValue: "failover-\(index)")
-      let candidate: RecoveryActor = try await survivor.virtualActors.getActor(
+      let candidate: RecoveryActor = try await survivor.virtualActors.instance(
         identifiedBy: candidateID,
         dependency: RecoveryActor.None()
       )
@@ -191,7 +191,7 @@ struct SingleFlightTests {
     var recovered: RecoveryActor?
     for _ in 0..<100 {
       do {
-        recovered = try await survivor.virtualActors.getActor(
+        recovered = try await survivor.virtualActors.instance(
           identifiedBy: actorID,
           dependency: RecoveryActor.None()
         )
