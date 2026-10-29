@@ -30,21 +30,18 @@ public actor ClusterVirtualActorsPlugin {
   /// call finds the instance gone.
   private var locations: [VirtualActorID: ClusterSystem.ActorID] = [:]
 
-  /// The actor identified by `id`, made with `dependency` when there's none. It's got as a
-  /// reference that stays valid while the actor deactivates, restarts or moves: each call reaches
-  /// its current instance, activating it again if it isn't running. It can be kept, and sent to
-  /// other nodes.
+  /// A reference to the actor identified by `id`. Each call reaches its current instance, which is
+  /// activated with `dependency` if it isn't running, so the reference stays valid while the actor
+  /// deactivates, restarts or moves. It can be kept, and sent to other nodes.
   public func getActor<A: VirtualActor, D: Codable & Sendable>(
     identifiedBy id: VirtualActorID,
     dependency: D
-  ) async throws -> A where A: Codable {
-    let (actorSystem, router) = try self.running()
-    let address = try VirtualActorAddress(id: id, actorType: A.self, dependency: dependency)
-    // Once it's got, it's there: made now when there's none, not only when something calls it.
-    self.locations[id] = try await address.instanceID(using: router)
+  ) throws -> A where A: Codable {
+    let actorSystem = try self.running().actorSystem
     if let reference = self.references[id] {
       return try A.resolve(id: reference, using: actorSystem)
     }
+    let address = try VirtualActorAddress(id: id, actorType: A.self, dependency: dependency)
     let metadata = ActorMetadata()
     metadata.virtualActor = address
     let actor = try actorSystem.interceptCalls(
