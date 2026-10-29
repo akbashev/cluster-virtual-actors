@@ -51,6 +51,57 @@ struct StableReferenceTests {
     }
   }
 
+  /// An actor that works on its own, as a bot that polls does: it counts the times it's made.
+  distributed actor Worker: VirtualActor {
+    typealias ActorSystem = ClusterSystem
+
+    struct None: Codable, Sendable {}
+
+    /// How many workers were made in this process.
+    static let made = Made()
+
+    init(actorSystem: ClusterSystem) {
+      self.actorSystem = actorSystem
+    }
+
+    static func spawn(on actorSystem: ClusterSystem, dependency: any Sendable & Codable) async throws -> Worker {
+      await made.add()
+      return Worker(actorSystem: actorSystem)
+    }
+  }
+
+  actor Made {
+    private(set) var count = 0
+
+    func add() {
+      self.count += 1
+    }
+  }
+
+  /// Getting an actor makes it when there's none, before anything calls it, and gets the one there
+  /// is when there's one: an actor that works on its own runs once it's got.
+  @Test
+  func gettingAnActorMakesItWhenThereIsNone() async throws {
+    let (system, node) = await ClusterSystem.startVirtualNode(named: "get-actor-makes") {
+      $0.bindPort = 2734
+      $0.autoLeaderElection = .lowestReachable(minNumberOfMembers: 1)
+      $0.plugins.install(plugin: ClusterSingletonPlugin())
+      let plugin = ClusterVirtualActorsPlugin.configuring(&$0, replicationFactor: 10)
+      $0.plugins.install(plugin: plugin)
+    }
+    defer { try? system.shutdown() }
+    system.cluster.join(endpoint: system.cluster.endpoint)
+    try await system.cluster.joined(within: .seconds(3))
+
+    let id = VirtualActorID(rawValue: "worker-1")
+    let _: Worker = try await system.virtualActors.getActor(identifiedBy: id, dependency: Worker.None())
+    #expect(await Worker.made.count == 1)
+    #expect(try await node.actorPlacements().count == 1)
+    // Got again, it's the one there is.
+    let _: Worker = try await system.virtualActors.getActor(identifiedBy: id, dependency: Worker.None())
+    #expect(await Worker.made.count == 1)
+  }
+
   @Test
   func referenceKeptOnAnotherNode_reachesTheActorAfterItIsDeactivated() async throws {
     let first = await ClusterSystem("stable-reference-first") {
