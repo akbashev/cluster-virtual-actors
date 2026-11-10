@@ -1,6 +1,7 @@
 import AsyncAlgorithms
-import Distributed
-import DistributedCluster
+public import Distributed
+public import DistributedCluster
+import Logging
 
 distributed public actor VirtualNode: Routable {
 

@@ -1,6 +1,6 @@
 import Distributed
-import DistributedCluster
-import Foundation
+public import DistributedCluster
+public import Foundation
 
 /// What a reference to a virtual actor carries in its ``ActorID``, so that any node can reach the
 /// actor — activating it if needed — instead of one incarnation of it.
@@ -68,11 +68,14 @@ extension ClusterSystem.ActorID {
 ///
 /// The instance's location is cached. A call that finds the instance gone (a dead letter, so it
 /// didn't run) asks for the location again and is retried once.
+///
+/// A call is the cluster's work, not any actor's: it runs concurrently, as DistributedCluster
+/// declares its interceptors and forwarding.
 struct VirtualActorInterceptor: RemoteCallInterceptor {
   let plugin: ClusterVirtualActorsPlugin
   let address: VirtualActorAddress
 
-  func interceptRemoteCall<Act, Err, Res>(
+  @concurrent func interceptRemoteCall<Act, Err, Res>(
     on actor: Act,
     target: RemoteCallTarget,
     invocation: inout ClusterSystem.InvocationEncoder,
@@ -104,7 +107,7 @@ struct VirtualActorInterceptor: RemoteCallInterceptor {
     }
   }
 
-  func interceptRemoteCallVoid<Act, Err>(
+  @concurrent func interceptRemoteCallVoid<Act, Err>(
     on actor: Act,
     target: RemoteCallTarget,
     invocation: inout ClusterSystem.InvocationEncoder,

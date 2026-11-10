@@ -1,5 +1,5 @@
-import Distributed
-@preconcurrency import DistributedCluster
+public import Distributed
+public import DistributedCluster
 
 typealias DefaultDistributedActorSystem = ClusterSystem
 

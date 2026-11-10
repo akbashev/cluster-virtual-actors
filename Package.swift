@@ -1,4 +1,4 @@
-// swift-tools-version: 6.2
+// swift-tools-version: 6.4
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import CompilerPluginSupport
@@ -16,6 +16,16 @@ platforms = [
   .watchOS(.v11),
 ]
 #endif
+
+/// The language as Swift 7 will have it, for every target.
+let swiftSettings: [SwiftSetting] = [
+  .enableUpcomingFeature("ExistentialAny"),
+  .enableUpcomingFeature("ImmutableWeakCaptures"),
+  .enableUpcomingFeature("InferIsolatedConformances"),
+  .enableUpcomingFeature("InternalImportsByDefault"),
+  .enableUpcomingFeature("MemberImportVisibility"),
+  .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+]
 
 let package = Package(
   name: "cluster-virtual-actors",
@@ -37,6 +47,10 @@ let package = Package(
       from: "1.0.0"
     ),
     .package(
+      url: "https://github.com/apple/swift-log.git",
+      from: "1.6.0"
+    ),
+    .package(
       url: "https://github.com/daisuke-t-jp/MurmurHash-Swift.git",
       from: "1.1.0"
     ),
@@ -53,7 +67,8 @@ let package = Package(
       dependencies: [
         .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
         .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
-      ]
+      ],
+      swiftSettings: swiftSettings
     ),
     .target(
       name: "VirtualActors",
@@ -68,23 +83,30 @@ let package = Package(
           package: "swift-async-algorithms"
         ),
         .product(
+          name: "Logging",
+          package: "swift-log"
+        ),
+        .product(
           name: "MurmurHash-Swift",
           package: "MurmurHash-Swift"
         ),
-      ]
+      ],
+      swiftSettings: swiftSettings
     ),
     .testTarget(
       name: "VirtualActorsTests",
       dependencies: [
         "VirtualActors"
-      ]
+      ],
+      swiftSettings: swiftSettings
     ),
     .testTarget(
       name: "VirtualActorsMacrosTests",
       dependencies: [
         "VirtualActorsMacros",
         .product(name: "SwiftSyntaxMacrosTestSupport", package: "swift-syntax"),
-      ]
+      ],
+      swiftSettings: swiftSettings
     ),
   ]
 )
