@@ -1,4 +1,4 @@
-import DistributedCluster
+public import DistributedCluster
 
 // Small helper, not sure if it will be needed, but let's play
 extension ClusterSystem {

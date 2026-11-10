@@ -68,8 +68,8 @@ struct StableReferenceTests {
       $0.plugins.install(plugin: plugin)
     }
     defer {
-      try? first.shutdown()
-      try? second.shutdown()
+      _ = try? first.shutdown()
+      _ = try? second.shutdown()
     }
     let virtualNode = await VirtualNode(actorSystem: first)
     first.cluster.join(endpoint: first.cluster.endpoint)
@@ -140,8 +140,8 @@ struct StableReferenceTests {
       $0.plugins.install(plugin: plugin)
     }
     defer {
-      try? first.shutdown()
-      try? second.shutdown()
+      _ = try? first.shutdown()
+      _ = try? second.shutdown()
     }
     let virtualNode = await VirtualNode(actorSystem: first)
     second.cluster.join(endpoint: first.cluster.endpoint)

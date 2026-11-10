@@ -40,7 +40,7 @@ struct GenericVirtualActorTests {
       let plugin = ClusterVirtualActorsPlugin.configuring(&$0, replicationFactor: 10)
       $0.plugins.install(plugin: plugin)
     }
-    defer { try? system.shutdown() }
+    defer { _ = try? system.shutdown() }
     let virtualNode = await VirtualNode(actorSystem: system)
     system.cluster.join(endpoint: system.cluster.endpoint)
     try await system.cluster.joined(within: .seconds(10))

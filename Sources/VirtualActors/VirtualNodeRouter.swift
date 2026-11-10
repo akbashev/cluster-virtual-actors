@@ -1,5 +1,6 @@
-import Distributed
-import DistributedCluster
+public import Distributed
+public import DistributedCluster
+import Logging
 
 // Internal singleton to handle nodes
 distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
@@ -20,7 +21,7 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
   // logical identity and the exact virtual node currently hosting it.
   private var registrations: [ClusterSystem.ActorID: Registration] = [:]
   // In flight tasks for finding/spawning
-  private var inFlightSpawning: [VirtualActorID: Task<any VirtualActor, Swift.Error>] = [:]
+  private var inFlightSpawning: [VirtualActorID: Task<any VirtualActor, any Swift.Error>] = [:]
   // In flight tasks for cleaning
   private var inFlightCleaning: [ClusterSystem.ActorID: Task<Void, any Swift.Error>] = [:]
   // Receptionist listining task
@@ -133,9 +134,9 @@ distributed actor VirtualNodeRouter: LifecycleWatch, ClusterSingleton {
     identifiedBy id: VirtualActorID,
     on node: VirtualNode,
     dependency: D
-  ) -> Task<any VirtualActor, Swift.Error> {
+  ) -> Task<any VirtualActor, any Swift.Error> {
     if let task = self.inFlightSpawning[id] { return task }
-    let task = Task<any VirtualActor, Swift.Error> {
+    let task = Task<any VirtualActor, any Swift.Error> {
       defer { self.inFlightSpawning[id] = nil }
 
       do {

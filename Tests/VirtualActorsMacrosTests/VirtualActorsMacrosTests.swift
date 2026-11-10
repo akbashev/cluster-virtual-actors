@@ -7,7 +7,7 @@ import VirtualActorsMacros
 
 struct VirtualActorsMacrosTests {
 
-  private let testMacros: [String: Macro.Type] = [
+  private let testMacros: [String: any Macro.Type] = [
     "VirtualActor": VirtualActorMacro.self
   ]
 

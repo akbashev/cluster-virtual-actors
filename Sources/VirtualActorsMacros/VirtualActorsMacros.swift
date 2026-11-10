@@ -1,7 +1,7 @@
-import SwiftCompilerPlugin
-import SwiftSyntax
+public import SwiftCompilerPlugin
+public import SwiftSyntax
 import SwiftSyntaxBuilder
-import SwiftSyntaxMacros
+public import SwiftSyntaxMacros
 
 /// Generates the `VirtualActor` conformance and, unless the actor declares
 /// its own, the `spawn(on:dependency:)` boilerplate. Two shapes:
@@ -112,7 +112,7 @@ public struct VirtualActorMacro: MemberMacro, ExtensionMacro {
 
 @main
 struct VirtualActorsPlugin: CompilerPlugin {
-  let providingMacros: [Macro.Type] = [
+  let providingMacros: [any Macro.Type] = [
     VirtualActorMacro.self
   ]
 }

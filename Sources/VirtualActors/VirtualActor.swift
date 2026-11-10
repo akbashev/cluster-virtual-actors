@@ -1,5 +1,5 @@
-import Distributed
-import DistributedCluster
+public import Distributed
+public import DistributedCluster
 
 /// Adds the ``VirtualActor`` conformance and generates the
 /// ``VirtualActor/spawn(on:dependency:)`` boilerplate (unless the actor
